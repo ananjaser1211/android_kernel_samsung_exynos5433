@@ -25,6 +25,10 @@ EXPORT_SYMBOL_GPL(selinux_is_enabled);
 
 bool selinux_is_enforcing(void)
 {
+#ifdef CONFIG_SECURITY_SELINUX_PERMISSIVE
+	return false;
+#else
 	return selinux_enforcing;
+#endif
 }
 EXPORT_SYMBOL_GPL(selinux_is_enforcing);
