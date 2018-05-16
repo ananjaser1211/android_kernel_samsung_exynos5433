@@ -422,6 +422,22 @@ config SKIP_HW_BREAKPOINT
 config SAMSUNG_PRODUCT_SHIP
 	bool "set up for product shipping"
 	default n
+	
+config BOARD_GTS28WIFI
+	bool "Samsung Tab S2 8.0 WIFI"
+	default n
+	
+config BOARD_GTS28LTEXX
+	bool "Samsung Tab S2 8.0 LTE"
+	default n
+	
+config BOARD_GTS210WIFI
+	bool "Samsung Tab S2 9.7 WIFI"
+	default n
+
+config BOARD_GTS210LTEXX
+	bool "Samsung Tab S2 9.7 LTE"
+	default n
 
 if EXYNOS_ATAGS
 
