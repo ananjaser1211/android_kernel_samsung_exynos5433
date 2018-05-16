@@ -137,4 +137,3 @@ config SEC_SELINUX
 	default n
 	help
 	  This option adds sec selinux feature
-
