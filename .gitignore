@@ -24,7 +24,6 @@
 *.order
 modules.builtin
 *.elf
-*.bin
 *.gz
 *.bz2
 *.lzma
@@ -80,6 +79,7 @@ GRTAGS
 GSYMS
 GTAGS
 
+*.rej
 *.orig
 *~
 \#*#
