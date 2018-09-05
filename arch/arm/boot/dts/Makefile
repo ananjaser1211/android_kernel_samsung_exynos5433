@@ -18,6 +18,15 @@ exynos5433-gts210_eur_open_04.dtb \
 exynos5433-gts210_eur_open_05.dtb \
 exynos5433-gts210_eur_open_06.dtb
 
+dtb-$(CONFIG_BOARD_TRELTEXX) += exynos5433-tre_eur_open_07.dtb \
+exynos5433-tre_eur_open_08.dtb \
+exynos5433-tre_eur_open_09.dtb \
+exynos5433-tre_eur_open_10.dtb \
+exynos5433-tre_eur_open_12.dtb \
+exynos5433-tre_eur_open_13.dtb \
+exynos5433-tre_eur_open_14.dtb \
+exynos5433-tre_eur_open_16.dtb \
+
 DTB_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES))
 ifneq ($(DTB_NAMES),)
 DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES))
