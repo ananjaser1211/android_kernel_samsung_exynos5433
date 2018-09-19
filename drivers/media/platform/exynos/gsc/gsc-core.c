@@ -1180,8 +1180,6 @@ static irqreturn_t gsc_irq_handler(int irq, void *priv)
 	struct gsc_dev *gsc = priv;
 	int gsc_irq;
 
-	set_bit(ST_IN_IRQ, &gsc->state);
-
 	gsc->pending_isr_time = sched_clock();
 	if (test_bit(ST_OUTPUT_OPEN, &gsc->state)) {
 		gsc->out.isr_time[gsc->out.real_isr_cnt % MAX_DEBUG_BUF_CNT] = sched_clock();
@@ -1274,10 +1272,6 @@ static irqreturn_t gsc_irq_handler(int irq, void *priv)
 
 isr_unlock:
 	spin_unlock(&gsc->slock);
-
-	clear_bit(ST_IN_IRQ, &gsc->state);
-	wake_up(&gsc->irq_finish);
-
 	return IRQ_HANDLED;
 }
 
@@ -1374,8 +1368,6 @@ void gsc_clock_gating(struct gsc_dev *gsc, enum gsc_clk_status status)
 		}
 		clk_enable(gsc->clock[CLK_GATE]);
 	} else if (status == GSC_CLK_OFF) {
-		wait_event(gsc->irq_finish, !test_bit(ST_IN_IRQ, &gsc->state));
-
 		clk_cnt = atomic_dec_return(&gsc->clk_cnt);
 		if (clk_cnt < 0) {
 			gsc_err("clock count is out of range");
@@ -1680,7 +1672,6 @@ static int gsc_probe(struct platform_device *pdev)
 	}
 
 	init_waitqueue_head(&gsc->irq_queue);
-	init_waitqueue_head(&gsc->irq_finish);
 	spin_lock_init(&gsc->slock);
 	mutex_init(&gsc->lock);
 

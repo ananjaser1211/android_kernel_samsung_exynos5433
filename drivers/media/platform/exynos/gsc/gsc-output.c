@@ -1112,16 +1112,12 @@ static int gsc_output_close(struct file *file)
 	if (q->streaming)
 		gsc_out_stop_streaming(q);
 
-	/* Disable GSC */
-	writel(readl(gsc->regs + GSC_ENABLE) & ~1, gsc->regs + GSC_ENABLE);
-
-	bts_otf_initialize(gsc->id, false);
-
-	pm_runtime_put_sync(&gsc->pdev->dev);
-
 	vb2_queue_release(q);
 	gsc_ctrls_delete(gsc->out.ctx);
 	v4l2_fh_release(file);
+
+	bts_otf_initialize(gsc->id, false);
+	pm_runtime_put_sync(&gsc->pdev->dev);
 
 	clear_bit(ST_OUTPUT_OPEN, &gsc->state);
 
