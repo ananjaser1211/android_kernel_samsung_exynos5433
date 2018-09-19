@@ -341,9 +341,14 @@ DEPMOD		= /sbin/depmod
 PERL		= perl
 CHECK		= sparse
 
+ifeq ($(CONFIG_FIPS_FMP),)
+    READELF        = $(CROSS_COMPILE)readelf
+    export READELF
+endif
+
 ifeq ($(CONFIG_CRYPTO_FIPS),)
-READELF	= $(CROSS_COMPILE)readelf
-export READELF
+    READELF        = $(CROSS_COMPILE)readelf
+    export READELF
 endif
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
@@ -387,7 +392,7 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
-KBUILD_AFLAGS   := -D__ASSEMBLY__
+KBUILD_AFLAGS   := -D__ASSEMBLY__ $(call cc-option,-fno-PIE)
 KBUILD_AFLAGS_MODULE  := -DMODULE
 KBUILD_CFLAGS_MODULE  := -DMODULE
 KBUILD_LDFLAGS_MODULE := -T $(srctree)/scripts/module-common.lds
@@ -452,6 +457,10 @@ asm-generic:
 	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.asm-generic \
 	            src=uapi/asm obj=arch/$(SRCARCH)/include/generated/uapi/asm
 
+# Set Android version as O
+export PLATFORM_VERSION=8.0.0
+KBUILD_CFLAGS += -DPLATFORM_VERSION=8.0.0
+
 ifneq ($(PLATFORM_VERSION), )
 PLATFORM_VERSION_NUMBER=$(shell $(CONFIG_SHELL) $(srctree)/scripts/android-version.sh $(PLATFORM_VERSION))
 MAJOR_VERSION=$(shell $(CONFIG_SHELL) $(srctree)/scripts/android-major-version.sh $(PLATFORM_VERSION))
@@ -463,10 +472,8 @@ KBUILD_CFLAGS += -DANDROID_MAJOR_VERSION=$(MAJOR_VERSION)
 SELINUX_DIR=$(shell $(CONFIG_SHELL) $(srctree)/scripts/find_matching_major.sh "$(srctree)" "security/selinux" "$(ANDROID_MAJOR_VERSION)")
 SDCARDFS_DIR=$(shell $(CONFIG_SHELL) $(srctree)/scripts/find_matching_version.sh "$(srctree)" "fs/sdcardfs" "$(ANDROID_VERSION)")
 else
-export ANDROID_VERSION=70000
-KBUILD_CFLAGS += -DANDROID_VERSION=70000
-export ANDROID_MAJOR_VERSION=7
-KBUILD_CFLAGS += -DANDROID_MAJOR_VERSION=7
+export ANDROID_VERSION=990000
+KBUILD_CFLAGS += -DANDROID_VERSION=990000
 endif
 PHONY += replace_dirs
 replace_dirs:
@@ -918,10 +925,6 @@ ifdef CONFIG_BUILD_DOCSRC
 	$(Q)$(MAKE) $(build)=Documentation
 endif
 	+$(call if_changed,link-vmlinux)
-ifdef CONFIG_CRYPTO_FIPS
-	@$(kecho) '  FIPS : Generating hmac of crypto and updating vmlinux... ';
-	$(call cmd,fips_gen_hmac)
-endif
 
 PHONY += print_info
 print_info:
