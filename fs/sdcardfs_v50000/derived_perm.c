@@ -102,7 +102,7 @@ void get_derived_permission(struct dentry *parent, struct dentry *dentry)
 						|| !strcasecmp(dentry->d_name.name, "Ringtones")) {
 					info->d_gid = AID_SDCARD_AV;
 				}
-			} else if (!strcasecmp(dentry->d_name.name, "knox")) {
+            } else if (!strcasecmp(dentry->d_name.name, "knox")) {
 				info->perm = PERM_ANDROID_KNOX;
 				info->d_gid = AID_SDCARD_R;
 				info->d_mode = 00771;
