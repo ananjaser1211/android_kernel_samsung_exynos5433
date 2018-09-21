@@ -40,7 +40,10 @@
 #include <sdp/fs_request.h>
 #include "ecryptfs_sdp_chamber.h"
 #include "ecryptfs_dek.h"
+
+#if (ANDROID_VERSION < 80000)
 #include "../sdcardfs/sdcardfs.h"
+#endif
 #endif
 
 #ifdef CONFIG_DLP
@@ -75,7 +78,7 @@ void ecryptfs_revert_fsids(const struct cred * old_cred)
 	put_cred(cur_cred); 
 }
 
-#ifndef CONFIG_SDP
+#if !defined(CONFIG_SDP) || (ANDROID_VERSION >= 80000)
 static struct dentry *lock_parent(struct dentry *dentry)
 {
 	struct dentry *dir;
@@ -181,36 +184,39 @@ static int ecryptfs_interpose(struct dentry *lower_dentry,
 		return PTR_ERR(inode);
 
 	d_instantiate(dentry, inode);
+#if (ANDROID_VERSION < 80000)
 	if(d_unhashed(dentry))
 		d_rehash(dentry);
+#endif
 
 #ifdef CONFIG_SDP
 	if(S_ISDIR(inode->i_mode) && dentry) {
-		if(IS_UNDER_ROOT(dentry)) {
-			struct ecryptfs_mount_crypt_stat *mount_crypt_stat  =
-					&ecryptfs_superblock_to_private(inode->i_sb)->mount_crypt_stat;
-			int engineid;
-			printk("Creating a directoy under root directory of current partition.\n");
+	    if(IS_UNDER_ROOT(dentry)) {
+	        struct ecryptfs_mount_crypt_stat *mount_crypt_stat  =
+	                &ecryptfs_superblock_to_private(inode->i_sb)->mount_crypt_stat;
+	        int engineid;
 
-			if(is_chamber_directory(mount_crypt_stat, dentry->d_name.name, &engineid)) {
-				printk("This is a chamber directory engine[%d]\n", engineid);
-				set_chamber_flag(engineid, inode);
-			}
-		} else if(IS_SENSITIVE_DENTRY(dentry->d_parent)) {
-			/*
-			 * When parent directory is sensitive
-			 */
-			struct ecryptfs_crypt_stat *crypt_stat =
-					&ecryptfs_inode_to_private(inode)->crypt_stat;
-			struct ecryptfs_crypt_stat *parent_crypt_stat =
-					&ecryptfs_inode_to_private(dentry->d_parent->d_inode)->crypt_stat;
+	        printk("Creating a directoy under root directory of current partition.\n");
 
-			//TODO : remove this log
-			DEK_LOGE("Parent %s[id:%d] is sensitive. so this directory is sensitive too\n",
-					dentry->d_parent->d_name.name, parent_crypt_stat->engine_id);
-			crypt_stat->flags |= ECRYPTFS_DEK_IS_SENSITIVE;
-			crypt_stat->engine_id = parent_crypt_stat->engine_id;
-		}
+	        if(is_chamber_directory(mount_crypt_stat, dentry->d_name.name, &engineid)) {
+	            printk("This is a chamber directory engine[%d]\n", engineid);
+	            set_chamber_flag(engineid, inode);
+	        }
+	    } else if(IS_SENSITIVE_DENTRY(dentry->d_parent)) {
+	        /*
+	         * When parent directory is sensitive
+	         */
+	        struct ecryptfs_crypt_stat *crypt_stat =
+	                &ecryptfs_inode_to_private(inode)->crypt_stat;
+            struct ecryptfs_crypt_stat *parent_crypt_stat =
+                    &ecryptfs_inode_to_private(dentry->d_parent->d_inode)->crypt_stat;
+
+            //TODO : remove this log
+            DEK_LOGE("Parent %s[id:%d] is sensitive. so this directory is sensitive too\n",
+	                dentry->d_parent->d_name.name, parent_crypt_stat->engine_id);
+	        crypt_stat->flags |= ECRYPTFS_DEK_IS_SENSITIVE;
+            crypt_stat->engine_id = parent_crypt_stat->engine_id;
+	    }
 	}
 #endif
 
@@ -407,6 +413,7 @@ int ecryptfs_initialize_file(struct dentry *ecryptfs_dentry,
 		printk(KERN_ERR "Error writing headers; rc = [%d]\n", rc);
 	ecryptfs_put_lower_file(ecryptfs_inode);
 #endif
+
 out:
 #ifdef CONFIG_DLP
 	if(cmd) {
@@ -455,8 +462,10 @@ ecryptfs_create(struct inode *directory_inode, struct dentry *ecryptfs_dentry,
 	}
 	unlock_new_inode(ecryptfs_inode);
 	d_instantiate(ecryptfs_dentry, ecryptfs_inode);
+#if (ANDROID_VERSION < 80000)
 	if(d_unhashed(ecryptfs_dentry))
 		d_rehash(ecryptfs_dentry);
+#endif
 out:
 	return rc;
 }
@@ -522,6 +531,10 @@ static int ecryptfs_lookup_interpose(struct dentry *dentry,
 	ecryptfs_set_dentry_lower_mnt(dentry, lower_mnt);
 
 	if (!lower_dentry->d_inode) {
+#if (ANDROID_VERSION >= 80000)
+		/* We want to add because we couldn't find in lower */
+		d_add(dentry, NULL);
+#endif
 		return 0;
 	}
 	inode = __ecryptfs_get_inode(lower_inode, dir_inode->i_sb);
@@ -540,33 +553,34 @@ static int ecryptfs_lookup_interpose(struct dentry *dentry,
 
 #ifdef CONFIG_SDP
 	if (S_ISDIR(inode->i_mode) && dentry) {
-		if(IS_UNDER_ROOT(dentry)) {
-			struct ecryptfs_mount_crypt_stat *mount_crypt_stat  =
-					&ecryptfs_superblock_to_private(inode->i_sb)->mount_crypt_stat;
-			int engineid;
-			//printk("Lookup a directoy under root directory of current partition.\n");
+	    if(IS_UNDER_ROOT(dentry)) {
+	        struct ecryptfs_mount_crypt_stat *mount_crypt_stat  =
+	                &ecryptfs_superblock_to_private(inode->i_sb)->mount_crypt_stat;
+	        int engineid;
 
-			if(is_chamber_directory(mount_crypt_stat, dentry->d_name.name, &engineid)) {
-				/*
-				 * When this directory is under ROOT directory and the name is registered
-				 * as Chamber.
-				 */
-				printk("This is a chamber directory engine[%d]\n", engineid);
-				set_chamber_flag(engineid, inode);
-			}
-		} else if(IS_SENSITIVE_DENTRY(dentry->d_parent)) {
-			/*
-			 * When parent directory is sensitive
-			 */
-			struct ecryptfs_crypt_stat *crypt_stat =
-					&ecryptfs_inode_to_private(inode)->crypt_stat;
+	        //printk("Lookup a directoy under root directory of current partition.\n");
+
+	        if(is_chamber_directory(mount_crypt_stat, dentry->d_name.name, &engineid)) {
+	            /*
+	             * When this directory is under ROOT directory and the name is registered
+	             * as Chamber.
+	             */
+	            printk("This is a chamber directory engine[%d]\n", engineid);
+	            set_chamber_flag(engineid, inode);
+	        }
+	    } else if(IS_SENSITIVE_DENTRY(dentry->d_parent)) {
+	        /*
+	         * When parent directory is sensitive
+	         */
+	        struct ecryptfs_crypt_stat *crypt_stat =
+	                &ecryptfs_inode_to_private(inode)->crypt_stat;
 	        struct ecryptfs_crypt_stat *parent_crypt_stat =
 	                &ecryptfs_inode_to_private(dentry->d_parent->d_inode)->crypt_stat;
-			printk("Parent %s is sensitive. so this directory is sensitive too\n",
-					dentry->d_parent->d_name.name);
-			crypt_stat->flags |= ECRYPTFS_DEK_IS_SENSITIVE;
-      crypt_stat->engine_id = parent_crypt_stat->engine_id;			
-		}
+	        printk("Parent %s is sensitive. so this directory is sensitive too\n",
+	                dentry->d_parent->d_name.name);
+	        crypt_stat->flags |= ECRYPTFS_DEK_IS_SENSITIVE;
+	        crypt_stat->engine_id = parent_crypt_stat->engine_id;
+	    }
 	}
 #endif
 
@@ -635,7 +649,7 @@ static struct dentry *ecryptfs_lookup(struct inode *ecryptfs_dir_inode,
 	}
 	mutex_lock(&lower_dir_dentry->d_inode->i_mutex);
 
-#ifdef CONFIG_SDP
+#if defined(CONFIG_SDP) && (ANDROID_VERSION < 80000)
 	if(!strncmp(lower_dir_dentry->d_sb->s_type->name, "sdcardfs", 8)) {
 		struct sdcardfs_dentry_info *dinfo = SDCARDFS_D(lower_dir_dentry);
 		struct dentry *parent = dget_parent(lower_dir_dentry);
@@ -686,10 +700,11 @@ static struct dentry *ecryptfs_lookup(struct inode *ecryptfs_dir_inode,
 		dput(parent);
 	}
 #endif
+
 	lower_dentry = lookup_one_len(encrypted_and_encoded_name,
 				      lower_dir_dentry,
 				      encrypted_and_encoded_name_size);
-#ifdef CONFIG_SDP
+#if defined(CONFIG_SDP) && (ANDROID_VERSION < 80000)
 	if(!strncmp(lower_dir_dentry->d_sb->s_type->name, "sdcardfs", 8)) {
 		struct sdcardfs_dentry_info *dinfo = SDCARDFS_D(lower_dir_dentry);
 		dinfo->under_knox = 0;
@@ -800,7 +815,7 @@ static int ecryptfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode
 	lower_dentry = ecryptfs_dentry_to_lower(dentry);
 	lower_dir_dentry = lock_parent(lower_dentry);
 
-#ifdef CONFIG_SDP
+#if defined(CONFIG_SDP) && (ANDROID_VERSION < 80000)
 	if(!strncmp(lower_dir_dentry->d_sb->s_type->name, "sdcardfs", 8)) {
 		struct sdcardfs_dentry_info *dinfo = SDCARDFS_D(lower_dir_dentry);
 		int len = strlen(dentry->d_name.name);
@@ -827,7 +842,7 @@ static int ecryptfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode
 	fsstack_copy_inode_size(dir, lower_dir_dentry->d_inode);
 	set_nlink(dir, lower_dir_dentry->d_inode->i_nlink);
 out:
-#ifdef CONFIG_SDP
+#if defined(CONFIG_SDP) && (ANDROID_VERSION < 80000)
 	if(!strncmp(lower_dir_dentry->d_sb->s_type->name, "sdcardfs", 8)) {
 		struct sdcardfs_dentry_info *dinfo = SDCARDFS_D(lower_dir_dentry);
 		dinfo->under_knox = 0;
@@ -915,13 +930,13 @@ ecryptfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	sdp_fs_command_t *cmd = NULL;
 	int rename_event = 0x00;
 	struct ecryptfs_crypt_stat *crypt_stat =
-			&(ecryptfs_inode_to_private(old_dentry->d_inode)->crypt_stat);
+	        &(ecryptfs_inode_to_private(old_dentry->d_inode)->crypt_stat);
 	struct ecryptfs_crypt_stat *parent_crypt_stat =
 	        &(ecryptfs_inode_to_private(old_dentry->d_parent->d_inode)->crypt_stat);
 	struct ecryptfs_crypt_stat *new_parent_crypt_stat =
 	        &(ecryptfs_inode_to_private(new_dentry->d_parent->d_inode)->crypt_stat);
 	struct ecryptfs_mount_crypt_stat *mount_crypt_stat =
-			&ecryptfs_superblock_to_private(old_dentry->d_sb)->mount_crypt_stat;
+	        &ecryptfs_superblock_to_private(old_dentry->d_sb)->mount_crypt_stat;
 
 #if ECRYPTFS_SDP_RENAME_DEBUG
 	printk("You're renaming %s to %s\n",
@@ -939,26 +954,26 @@ ecryptfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 					new_dentry->d_inode);
 #endif
 
-	if(IS_CHAMBER_DENTRY(old_dentry)) {
-		printk("Rename trial on chamber : failed\n");
-		return -EIO;
-	}
+    if(IS_CHAMBER_DENTRY(old_dentry)) {
+        printk("Rename trial on chamber : failed\n");
+        return -EIO;
+    }
 
 #if 0 // kernel panic. new_crypt_stat->engine_id
-	if(IS_SENSITIVE_DENTRY(old_dentry->d_parent) &&
-			IS_SENSITIVE_DENTRY(new_dentry->d_parent)) {
-		if(crypt_stat->engine_id != new_crypt_stat->engine_id) {
-			printk("Rename chamber file to another chamber : failed\n");
-			return -EIO;
-		}
-	}
+    if(IS_SENSITIVE_DENTRY(old_dentry->d_parent) &&
+            IS_SENSITIVE_DENTRY(new_dentry->d_parent)) {
+        if(crypt_stat->engine_id != new_crypt_stat->engine_id) {
+            printk("Rename chamber file to another chamber : failed\n");
+            return -EIO;
+        }
+    }
 #endif
 
 	if(IS_SENSITIVE_DENTRY(old_dentry->d_parent)) {
 	    if(ecryptfs_is_sdp_locked(parent_crypt_stat->engine_id)) {
-			printk("Rename/move trial in locked state\n");
-			return -EIO;
-		}
+	        printk("Rename/move trial in locked state\n");
+	        return -EIO;
+	    }
 	}
 
 	if(IS_SENSITIVE_DENTRY(old_dentry->d_parent) &&
@@ -970,7 +985,7 @@ ecryptfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	}
 
 	if(IS_SENSITIVE_DENTRY(old_dentry->d_parent) &&
-			!IS_SENSITIVE_DENTRY(new_dentry->d_parent))		
+			!IS_SENSITIVE_DENTRY(new_dentry->d_parent))
 		rename_event |= ECRYPTFS_EVT_RENAME_OUT_OF_CHAMBER;
 
 	if(!IS_SENSITIVE_DENTRY(old_dentry->d_parent) &&
@@ -1011,25 +1026,25 @@ ecryptfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	if(!rc) {
 		crypt_stat = &(ecryptfs_inode_to_private(old_dentry->d_inode)->crypt_stat);
 
-		if(rename_event > 0) {
-			switch(rename_event) {
-			case ECRYPTFS_EVT_RENAME_TO_CHAMBER:
+        if(rename_event > 0) {
+            switch(rename_event) {
+            case ECRYPTFS_EVT_RENAME_TO_CHAMBER:
                 cmd = sdp_fs_command_alloc(FSOP_SDP_SET_SENSITIVE, current->pid,
                 		mount_crypt_stat->userid, mount_crypt_stat->partition_id,
                         old_dentry->d_inode->i_ino,
                         GFP_NOFS);
-				break;
-			case ECRYPTFS_EVT_RENAME_OUT_OF_CHAMBER:
+                break;
+            case ECRYPTFS_EVT_RENAME_OUT_OF_CHAMBER:
                 cmd = sdp_fs_command_alloc(FSOP_SDP_SET_PROTECTED, current->pid,
                 		mount_crypt_stat->userid, mount_crypt_stat->partition_id,
                         old_dentry->d_inode->i_ino,
                         GFP_NOFS);
-				break;
-			default:
+                break;
+            default:
                 cmd = NULL;
-				break;
-			}
-		}
+                break;
+            }
+        }
 #if ECRYPTFS_SDP_RENAME_DEBUG
 		printk("[end of rename] old_dentry[%p] : %s [parent %s : %s] inode:%p\n",
 				old_dentry, old_dentry->d_name.name,
