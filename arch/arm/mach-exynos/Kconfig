@@ -439,6 +439,10 @@ config BOARD_GTS210LTEXX
 	bool "Samsung Tab S2 9.7 LTE"
 	default n
 
+config BOARD_TRELTEXX
+	bool "Samsung Galaxy N4 LTE
+	default n
+
 if EXYNOS_ATAGS
 
 config EXYNOS_DEV_DMA

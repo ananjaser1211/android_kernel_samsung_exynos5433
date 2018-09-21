@@ -388,7 +388,8 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -Wno-error=declaration-after-statement \
 		   -Wno-sequence-point \
 		   -Wno-unused-variable \
-		   -std=gnu89
+		   -std=gnu89 \
+		   -fdiagnostics-show-option
 
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
