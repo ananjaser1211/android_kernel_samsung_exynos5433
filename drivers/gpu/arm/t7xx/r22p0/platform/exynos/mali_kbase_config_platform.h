@@ -68,7 +68,7 @@
  * Attached value: pointer to @ref kbase_platform_funcs_conf
  * Default value: See @ref kbase_platform_funcs_conf
  */
-//#define PLATFORM_FUNCS (NULL)
+/* MALI_SEC_INTEGRATION */
 #define PLATFORM_FUNCS (&platform_funcs)
 
 /** Power model for IPA
@@ -86,7 +86,7 @@ extern struct kbase_platform_funcs_conf platform_funcs;
  * Attached value: pointer to @ref kbase_secure_ops
  */
 #ifdef CONFIG_MALI_EXYNOS_SECURE_RENDERING
-#define PROTECTED_CALLBACKS (&exynos_secure_ops)
-extern struct kbase_protected_ops exynos_secure_ops;
+#define PROTECTED_CALLBACKS (&exynos_protected_ops)
+extern struct protected_mode_ops exynos_protected_ops;
 #endif
 

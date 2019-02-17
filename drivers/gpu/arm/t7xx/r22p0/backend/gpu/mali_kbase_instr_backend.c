@@ -7,13 +7,18 @@
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 
 
@@ -240,8 +245,7 @@ int kbase_instr_hwcnt_disable_internal(struct kbase_context *kctx)
 							kbdev->hwcnt.backend.triggered != 0, kbdev->hwcnt.timeout);
 			if (ret == 0)
 				kbdev->hwcnt.backend.state = KBASE_INSTR_STATE_IDLE;
-		}
-		else
+		} else
 #endif
 		wait_event(kbdev->hwcnt.backend.wait,
 					kbdev->hwcnt.backend.triggered != 0);
@@ -395,8 +399,7 @@ void kbasep_cache_clean_worker(struct work_struct *data)
 								KBASE_INSTR_STATE_CLEANING, kbdev->hwcnt.timeout);
 			if (ret == 0)
 				kbdev->hwcnt.backend.state = KBASE_INSTR_STATE_IDLE;
-		}
-		else
+		} else
 #endif
 		wait_event(kbdev->hwcnt.backend.cache_clean_wait,
 				kbdev->hwcnt.backend.state !=

@@ -78,9 +78,6 @@ typedef enum {
 typedef enum {
 	TMU_LOCK = 0,
 	SYSFS_LOCK,
-#ifdef CONFIG_MALI_DVFS_USER
-	USER_LOCK,
-#endif
 #ifdef CONFIG_CPU_THERMAL_IPA
 	IPA_LOCK,
 #endif /* CONFIG_CPU_THERMAL_IPA */
@@ -161,10 +158,6 @@ typedef enum {
 	GPU_CL_DVFS_START_BASE,
 	GPU_DEBUG_LEVEL,
 	GPU_TRACE_LEVEL,
-#ifdef CONFIG_MALI_DVFS_USER
-	GPU_UDVFS_ENABLE,
-	GPU_UHWCNT_ENABLE,
-#endif
 	GPU_MO_MIN_CLOCK,
 	GPU_CONFIG_LIST_END,
 } gpu_config_list;
@@ -186,6 +179,7 @@ typedef struct _gpu_dvfs_info {
 	int int_freq;
 	int cpu_freq;
 	int cpu_max_freq;
+	int g3dm_voltage;
 } gpu_dvfs_info;
 
 typedef struct _gpu_dvfs_governor_info {
@@ -202,50 +196,6 @@ typedef struct _gpu_dvfs_env_data {
 	int perf;
 	int hwcnt;
 } gpu_dvfs_env_data;
-
-#ifdef CONFIG_MALI_DVFS_USER
-typedef enum {
-	HWC_DATA_NUM,
-	HWC_DATA_CLOCK,
-	HWC_DATA_UTILIZATION,
-	HWC_DATA_GPU_ACTIVE,
-	HWC_DATA_TRIPIPE_ACTIVE,
-	HWC_DATA_ARITH_WORDS,
-	HWC_DATA_LS_ISSUES,
-	HWC_DATA_TEX_ISSUES,
-
-	HWC_DATA_GPU_JS0_ACTIVE,
-	HWC_DATA_GPU_JS1_ACTIVE,
-	HWC_DATA_GPU_JS2_ACTIVE,
-	HWC_DATA_ARITH_CYCLES_REG,
-	HWC_DATA_ARITH_CYCLES_L0,
-	HWC_DATA_ARITH_FRAG_DEPEND,
-	HWC_DATA_LS_WORDS,
-	HWC_DATA_TEX_WORDS,
-	HWC_DATA_FRAG_ACTIVE,
-	HWC_DATA_FRAG_PRIMITIVES,
-	HWC_DATA_COMPUTE_ACTIVE,
-	HWC_DATA_TILER_ACTIVE,
-	HWC_DATA_L2_EXT_RD_BEAT,
-	HWC_DATA_L2_EXT_WR_BEAT,
-	HWC_DATA_MMU_HIT,
-	HWC_DATA_NEW_MISS,
-	HWC_DATA_MAX
-} HWC_DATA_IDX;
-
-typedef struct _gpu_dvfs_hwc_setup{
-	u32 profile_mode;
-	u32 jm_bm;
-	u32 tiler_bm;
-	u32 sc_bm;
-	u32 memory_bm;
-} gpu_dvfs_hwc_setup;
-
-typedef struct _gpu_dvfs_hwc_data {
-	u32 data[HWC_DATA_MAX];
-} gpu_dvfs_hwc_data;
-#endif
-
 
 struct exynos_context {
 	/* lock variables */
@@ -315,26 +265,13 @@ struct exynos_context {
 	int gpu_min_clock;
 	int gpu_dvfs_start_clock;
 	int gpu_dvfs_config_clock;
+	int user_max_lock_input;
+	int user_min_lock_input;
 
 	/* gpu boost lock */
 	int boost_gpu_min_lock;
 	int boost_egl_min_lock;
 	bool boost_is_enabled;
-#ifdef CONFIG_MALI_DVFS_USER
-	/* other boost lock */
-	int mif_min_step;
-	int int_min_step;
-	int apollo_min_step;
-	int atlas_min_step;
-	int *mif_table;
-	int *int_table;
-	int *atlas_table;
-	int *apollo_table;
-	int mif_table_size;
-	int int_table_size;
-	int atlas_table_size;
-	int apollo_table_size;
-#endif
 	bool tmu_status;
 	int tmu_lock_clk[TMU_LOCK_CLK_END];
 	int cold_min_vol;
@@ -384,12 +321,6 @@ struct exynos_context {
 	int data_invalid_fault_count;
 	int mmu_fault_count;
 	int balance_retry_count[BMAX_RETRY_CNT];
-#ifdef CONFIG_MALI_DVFS_USER
-	int udvfs_enable;
-	struct kbase_context *dvfs_kctx;
-	int atom_idx;
-	gpu_dvfs_hwc_data hwc_data;
-#endif
 	gpu_attribute *attrib;
 	int mo_min_clock;
 	int *save_cpu_max_freq;
@@ -412,14 +343,4 @@ void gpu_clock_disable(struct kbase_device *kbdev);
 bool balance_init(struct kbase_device *kbdev);
 int exynos_gpu_init_hw(void *dev);
 
-#ifdef CONFIG_MALI_DVFS_USER
-bool gpu_dvfs_process_job(void *pkatom);
-unsigned int gpu_get_config_attr_size(void);
-void gpu_dvfs_notify_poweron(void);
-void gpu_dvfs_notify_poweroff(void);
-void gpu_dvfs_check_destroy_context(struct kbase_context *kctx);
-#ifdef CONFIG_PWRCAL
-bool update_cal_table(void);
-#endif
-#endif
 #endif /* _GPU_PLATFORM_H_ */

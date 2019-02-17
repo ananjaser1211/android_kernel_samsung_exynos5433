@@ -1,19 +1,24 @@
 /*
  *
- * (C) COPYRIGHT 2010-2016 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2010-2017 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 
 
@@ -24,6 +29,8 @@
 #include <mali_kbase.h>
 #include <mali_midg_regmap.h>
 #include <mali_kbase_mem_linux.h>
+#include <mali_kbase_dma_fence.h>
+#include <mali_kbase_ctx_sched.h>
 
 /**
  * kbase_create_context() - Create a kernel base context.
@@ -39,6 +46,7 @@ kbase_create_context(struct kbase_device *kbdev, bool is_compat)
 {
 	struct kbase_context *kctx;
 	int err;
+	struct page *p;
 
 	KBASE_DEBUG_ASSERT(kbdev != NULL);
 
@@ -53,8 +61,14 @@ kbase_create_context(struct kbase_device *kbdev, bool is_compat)
 
 	kctx->kbdev = kbdev;
 	kctx->as_nr = KBASEP_AS_NR_INVALID;
+	atomic_set(&kctx->refcount, 0);
 	if (is_compat)
 		kbase_ctx_flag_set(kctx, KCTX_COMPAT);
+#if defined(CONFIG_64BIT)
+	else
+		kbase_ctx_flag_set(kctx, KCTX_FORCE_SAME_VA);
+#endif /* !defined(CONFIG_64BIT) */
+
 #ifdef CONFIG_MALI_TRACE_TIMELINE
 	kctx->timeline.owner_tgid = task_tgid_nr(current);
 #endif
@@ -68,14 +82,24 @@ kbase_create_context(struct kbase_device *kbdev, bool is_compat)
 	kctx->pid = current->pid;
 
 	err = kbase_mem_pool_init(&kctx->mem_pool,
-			kbdev->mem_pool_max_size_default,
-			kctx->kbdev, &kbdev->mem_pool);
+				  kbdev->mem_pool_max_size_default,
+				  KBASE_MEM_POOL_4KB_PAGE_TABLE_ORDER,
+				  kctx->kbdev,
+				  &kbdev->mem_pool);
 	if (err)
 		goto free_kctx;
 
+	err = kbase_mem_pool_init(&kctx->lp_mem_pool,
+				  (kbdev->mem_pool_max_size_default >> 9),
+				  KBASE_MEM_POOL_2MB_PAGE_TABLE_ORDER,
+				  kctx->kbdev,
+				  &kbdev->lp_mem_pool);
+	if (err)
+		goto free_mem_pool;
+
 	err = kbase_mem_evictable_init(kctx);
 	if (err)
-		goto free_pool;
+		goto free_both_pools;
 
 	atomic_set(&kctx->used_pages, 0);
 
@@ -95,11 +119,11 @@ kbase_create_context(struct kbase_device *kbdev, bool is_compat)
 
 	mutex_init(&kctx->reg_lock);
 
+	mutex_init(&kctx->mem_partials_lock);
+	INIT_LIST_HEAD(&kctx->mem_partials);
+
 	INIT_LIST_HEAD(&kctx->waiting_soft_jobs);
 	spin_lock_init(&kctx->waiting_soft_jobs_lock);
-#ifdef CONFIG_KDS
-	INIT_LIST_HEAD(&kctx->waiting_kds_resource);
-#endif
 	err = kbase_dma_fence_init(kctx);
 	if (err)
 		goto free_event;
@@ -119,9 +143,10 @@ kbase_create_context(struct kbase_device *kbdev, bool is_compat)
 		mutex_unlock(&kctx->mmu_lock);
 	} while (!kctx->pgd);
 
-	kctx->aliasing_sink_page = kbase_mem_alloc_page(kctx->kbdev);
-	if (!kctx->aliasing_sink_page)
+	p = kbase_mem_alloc_page(&kctx->mem_pool);
+	if (!p)
 		goto no_sink_page;
+	kctx->aliasing_sink_page = as_tagged(page_to_phys(p));
 
 	init_waitqueue_head(&kctx->event_queue);
 
@@ -153,6 +178,7 @@ kbase_create_context(struct kbase_device *kbdev, bool is_compat)
 	setup_timer(&kctx->soft_job_timeout,
 		    kbasep_soft_job_timeout_worker,
 		    (uintptr_t)kctx);
+
 	/* MALI_SEC_INTEGRATION */
 	if (kbdev->vendor_callbacks->create_context)
 		kbdev->vendor_callbacks->create_context(kctx);
@@ -160,7 +186,6 @@ kbase_create_context(struct kbase_device *kbdev, bool is_compat)
 	/* MALI_SEC_INTEGRATION */
 	atomic_set(&kctx->mem_profile_showing_state, 0);
 	init_waitqueue_head(&kctx->mem_profile_wait);
-
 
 	return kctx;
 
@@ -171,7 +196,7 @@ no_jit:
 no_sticky:
 	kbase_region_tracker_term(kctx);
 no_region_tracker:
-	kbase_mem_pool_free(&kctx->mem_pool, kctx->aliasing_sink_page, false);
+	kbase_mem_pool_free(&kctx->mem_pool, p, false);
 no_sink_page:
 	/* VM lock needed for the call to kbase_mmu_free_pgd */
 	kbase_gpu_vm_lock(kctx);
@@ -189,7 +214,9 @@ free_jd:
 	kbase_jd_exit(kctx);
 deinit_evictable:
 	kbase_mem_evictable_deinit(kctx);
-free_pool:
+free_both_pools:
+	kbase_mem_pool_term(&kctx->lp_mem_pool);
+free_mem_pool:
 	kbase_mem_pool_term(&kctx->mem_pool);
 free_kctx:
 	vfree(kctx);
@@ -218,6 +245,8 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	struct kbase_device *kbdev;
 	int pages;
 	unsigned long pending_regions_to_clean;
+	unsigned long flags;
+	struct page *p;
 
 	/* MALI_SEC_INTEGRATION */
 	int profile_count;
@@ -226,8 +255,7 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	if (!kctx) {
 		printk("An uninitialized or destroyed context is tried to be destroyed. kctx is null\n");
 		return ;
-	}
-	else if (kctx->ctx_status != CTX_INITIALIZED) {
+	} else if (kctx->ctx_status != CTX_INITIALIZED) {
 		printk("An uninitialized or destroyed context is tried to be destroyed\n");
 		printk("kctx: 0x%p, kctx->tgid: %d, kctx->ctx_status: 0x%x\n", kctx, kctx->tgid, kctx->ctx_status);
 		return ;
@@ -258,6 +286,14 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	kbase_pm_context_active(kbdev);
 
 	kbase_jd_zap_context(kctx);
+
+#ifdef CONFIG_DEBUG_FS
+	/* Removing the rest of the debugfs entries here as we want to keep the
+	 * atom debugfs interface alive until all atoms have completed. This
+	 * is useful for debugging hung contexts. */
+	debugfs_remove_recursive(kctx->kctx_dentry);
+#endif
+
 	kbase_event_cleanup(kctx);
 
 	/*
@@ -276,7 +312,8 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	kbase_mmu_free_pgd(kctx);
 
 	/* drop the aliasing sink page now that it can't be mapped anymore */
-	kbase_mem_pool_free(&kctx->mem_pool, kctx->aliasing_sink_page, false);
+	p = phys_to_page(as_phys_addr_t(kctx->aliasing_sink_page));
+	kbase_mem_pool_free(&kctx->mem_pool, p, false);
 
 	/* free pending region setups */
 	pending_regions_to_clean = (~kctx->cookies) & KBASE_COOKIE_MASK;
@@ -299,9 +336,13 @@ void kbase_destroy_context(struct kbase_context *kctx)
 
 	kbase_jd_exit(kctx);
 
-	kbase_pm_context_idle(kbdev);
-
 	kbase_dma_fence_term(kctx);
+
+	mutex_lock(&kbdev->mmu_hw_mutex);
+	spin_lock_irqsave(&kctx->kbdev->hwaccess_lock, flags);
+	kbase_ctx_sched_remove_ctx(kctx);
+	spin_unlock_irqrestore(&kctx->kbdev->hwaccess_lock, flags);
+	mutex_unlock(&kbdev->mmu_hw_mutex);
 
 	kbase_mmu_term(kctx);
 
@@ -311,10 +352,11 @@ void kbase_destroy_context(struct kbase_context *kctx)
 
 	kbase_mem_evictable_deinit(kctx);
 	kbase_mem_pool_term(&kctx->mem_pool);
+	kbase_mem_pool_term(&kctx->lp_mem_pool);
 	WARN_ON(atomic_read(&kctx->nonmapped_pages) != 0);
 
 	/* MALI_SEC_INTEGRATION */
-	if(kbdev->vendor_callbacks->destroy_context)
+	if (kbdev->vendor_callbacks->destroy_context)
 		kbdev->vendor_callbacks->destroy_context(kctx);
 
 	if (kctx->ctx_need_qos) {
@@ -324,6 +366,8 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	vfree(kctx);
 	/* MALI_SEC_INTEGRATION */
 	kctx = NULL;
+
+	kbase_pm_context_idle(kbdev);
 }
 KBASE_EXPORT_SYMBOL(kbase_destroy_context);
 

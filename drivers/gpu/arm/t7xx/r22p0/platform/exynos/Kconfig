@@ -122,3 +122,10 @@ config MALI_SEC_ASP_SECURE_BUF_CTRL
     default n
     help
       Support Secure Rendering with ASP on Exynos SoC
+
+config MALI_SEC_JOB_STATUS_CHECK
+	bool "Enable GPU JOB & FENCE STATUS DUMP "
+	depends on MALI_RT_PM && MALI_DVFS && (SYNC || SYNC_FILE)
+	default y
+	help
+	  Choose this option to enable job & fence status dump feature in the Mali Midgard DDK.

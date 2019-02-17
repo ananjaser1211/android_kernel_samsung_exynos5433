@@ -1,19 +1,24 @@
 /*
  *
- * (C) COPYRIGHT 2014-2016 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2014-2017 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 /*
  * Backend-specific Power Manager definitions
@@ -23,6 +28,7 @@
 #define _KBASE_PM_HWACCESS_DEFS_H_
 
 #include "mali_kbase_pm_ca_fixed.h"
+#include "mali_kbase_pm_ca_devfreq.h"
 #if !MALI_CUSTOMER_RELEASE
 #include "mali_kbase_pm_ca_random.h"
 #endif
@@ -138,6 +144,7 @@ union kbase_pm_policy_data {
 
 union kbase_pm_ca_policy_data {
 	struct kbasep_pm_ca_policy_fixed fixed;
+	struct kbasep_pm_ca_policy_devfreq devfreq;
 #if !MALI_CUSTOMER_RELEASE
 	struct kbasep_pm_ca_policy_random random;
 #endif
@@ -310,8 +317,11 @@ struct kbase_pm_backend_data {
 	bool poweron_required;
 	bool poweroff_is_suspend;
 
+	/* MALI_SEC_INTEGRATIN : remove power off wq */
+/*
 	struct workqueue_struct *gpu_poweroff_wait_wq;
 	struct work_struct gpu_poweroff_wait_work;
+*/
 
 	wait_queue_head_t poweroff_wait;
 
@@ -421,6 +431,7 @@ struct kbase_pm_policy {
 
 enum kbase_pm_ca_policy_id {
 	KBASE_PM_CA_POLICY_ID_FIXED = 1,
+	KBASE_PM_CA_POLICY_ID_DEVFREQ,
 	KBASE_PM_CA_POLICY_ID_RANDOM
 };
 

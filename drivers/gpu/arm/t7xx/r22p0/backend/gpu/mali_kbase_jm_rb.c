@@ -7,13 +7,18 @@
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 
 /*
@@ -623,6 +628,8 @@ static void kbase_gpu_release_atom(struct kbase_device *kbdev,
 					struct kbase_jd_atom *katom,
 					ktime_t *end_timestamp)
 {
+	struct kbase_context *kctx = katom->kctx;
+
 	switch (katom->gpu_rb_state) {
 	case KBASE_ATOM_GPU_RB_NOT_IN_SLOT_RB:
 		/* Should be impossible */
@@ -639,6 +646,14 @@ static void kbase_gpu_release_atom(struct kbase_device *kbdev,
 		if (katom->core_req & BASE_JD_REQ_PERMON)
 			kbase_pm_release_gpu_cycle_counter_nolock(kbdev);
 		/* ***FALLTHROUGH: TRANSITION TO LOWER STATE*** */
+
+		KBASE_TLSTREAM_TL_NRET_ATOM_LPU(katom,
+			&kbdev->gpu_props.props.raw_props.js_features
+				[katom->slot_nr]);
+		KBASE_TLSTREAM_TL_NRET_ATOM_AS(katom, &kbdev->as[kctx->as_nr]);
+		KBASE_TLSTREAM_TL_NRET_CTX_LPU(kctx,
+			&kbdev->gpu_props.props.raw_props.js_features
+				[katom->slot_nr]);
 
 	case KBASE_ATOM_GPU_RB_READY:
 		/* ***FALLTHROUGH: TRANSITION TO LOWER STATE*** */
@@ -660,8 +675,13 @@ static void kbase_gpu_release_atom(struct kbase_device *kbdev,
 
 		if (kbase_jd_katom_is_protected(katom) &&
 				(katom->protected_state.enter ==
-				KBASE_ATOM_ENTER_PROTECTED_IDLE_L2))
+				KBASE_ATOM_ENTER_PROTECTED_IDLE_L2)) {
 			kbase_vinstr_resume(kbdev->vinstr_ctx);
+
+			/* Go back to configured model for IPA */
+			kbase_ipa_model_use_configured_locked(kbdev);
+		}
+
 
 		/* ***FALLTHROUGH: TRANSITION TO LOWER STATE*** */
 
@@ -749,6 +769,7 @@ static inline bool kbase_gpu_in_protected_mode(struct kbase_device *kbdev)
 	return kbdev->protected_mode;
 }
 
+/* MALI_SEC_SECURE_RENDERING */
 #ifndef CONFIG_MALI_EXYNOS_SECURE_RENDERING
 static int kbase_gpu_protected_mode_enter(struct kbase_device *kbdev)
 {
@@ -769,7 +790,8 @@ static int kbase_gpu_protected_mode_enter(struct kbase_device *kbdev)
 
 	if (kbdev->protected_ops) {
 		/* Switch GPU to protected mode */
-		err = kbdev->protected_ops->protected_mode_enter(kbdev);
+		err = kbdev->protected_ops->protected_mode_enable(
+				kbdev->protected_dev);
 
 		if (err)
 			dev_warn(kbdev->dev, "Failed to enable protected mode: %d\n",
@@ -791,23 +813,34 @@ static int kbase_gpu_protected_mode_reset(struct kbase_device *kbdev)
 	if (!kbdev->protected_ops)
 		return -EINVAL;
 
-#ifdef CONFIG_MALI_EXYNOS_SECURE_RENDERING
-	if (kbdev->protected_mode == true) {
-
-		WARN_ONCE(!kbdev->protected_ops,
-				"Cannot disable secure mode: secure callbacks not specified.\n");
-
-		if (kbdev->protected_ops) {
-			/* Switch GPU to non-secure mode */
-			kbdev->protected_ops->protected_mode_reset(kbdev);
-
-			kbdev->protected_mode = false;
-		}
-	}
-#endif
+	/* The protected mode disable callback will be called as part of reset
+	 */
 	kbase_reset_gpu_silent(kbdev);
 
 	return 0;
+}
+#endif
+
+#ifdef CONFIG_MALI_EXYNOS_SECURE_RENDERING
+void kbasep_js_cacheclean(struct kbase_device *kbdev)
+{
+	/* Limit the number of loops to avoid a hang if the interrupt is missed */
+	u32 max_loops = KBASE_CLEAN_CACHE_MAX_LOOPS;
+
+	GPU_LOG(DVFS_INFO, LSI_SECURE_CACHE, 0u, 0u, "GPU CACHE WORKING for Secure Rendering\n");
+	/* use GPU_COMMAND completion solution */
+	/* clean the caches */
+	kbase_reg_write(kbdev, GPU_CONTROL_REG(GPU_COMMAND), GPU_COMMAND_CLEAN_CACHES, NULL);
+
+	/* wait for cache flush to complete before continuing */
+	while (--max_loops && (kbase_reg_read(kbdev, GPU_CONTROL_REG(GPU_IRQ_RAWSTAT), NULL) & CLEAN_CACHES_COMPLETED) == 0)
+		;
+
+	/* clear the CLEAN_CACHES_COMPLETED irq */
+	kbase_reg_write(kbdev, GPU_CONTROL_REG(GPU_IRQ_CLEAR), CLEAN_CACHES_COMPLETED, NULL);
+	KBASE_DEBUG_ASSERT_MSG(kbdev->hwcnt.state != KBASE_INSTR_STATE_CLEANING,
+			"Instrumentation code was cleaning caches, but Job Management code cleared their IRQ - Instrumentation code will now hang.");
+	GPU_LOG(DVFS_INFO, LSI_SECURE_CACHE_END, 0u, 0u, "GPU CACHE WORKING for Secure Rendering\n");
 }
 #endif
 
@@ -815,14 +848,15 @@ static int kbase_jm_enter_protected_mode(struct kbase_device *kbdev,
 		struct kbase_jd_atom **katom, int idx, int js)
 {
 	int err = 0;
-
 #ifdef CONFIG_MALI_EXYNOS_SECURE_RENDERING
 	if (kbase_gpu_atoms_submitted_any(kbdev))
 		return -EAGAIN;
 
 	if (kbdev->protected_ops) {
 		/* Switch GPU to protected mode */
-		err = kbdev->protected_ops->protected_mode_enter(kbdev);
+		kbasep_js_cacheclean(kbdev);
+		err = kbdev->protected_ops->protected_mode_enable(
+				kbdev->protected_dev);
 
 		if (err)
 			dev_warn(kbdev->dev, "Failed to enable protected mode: %d\n",
@@ -834,6 +868,7 @@ static int kbase_jm_enter_protected_mode(struct kbase_device *kbdev,
 #else
 	switch (katom[idx]->protected_state.enter) {
 	case KBASE_ATOM_ENTER_PROTECTED_CHECK:
+		KBASE_TLSTREAM_AUX_PROTECTED_ENTER_START(kbdev);
 		/* The checks in KBASE_ATOM_GPU_RB_WAITING_PROTECTED_MODE_PREV
 		 * should ensure that we are not already transitiong, and that
 		 * there are no atoms currently on the GPU. */
@@ -855,6 +890,9 @@ static int kbase_jm_enter_protected_mode(struct kbase_device *kbdev,
 			 */
 			return -EAGAIN;
 		}
+
+		/* Use generic model for IPA in protected mode */
+		kbase_ipa_model_use_fallback_locked(kbdev);
 
 		/* Once reaching this point GPU must be
 		 * switched to protected mode or vinstr
@@ -900,7 +938,7 @@ static int kbase_jm_enter_protected_mode(struct kbase_device *kbdev,
 		 * the GPU.
 		 */
 		kbdev->protected_mode_transition = false;
-
+		KBASE_TLSTREAM_AUX_PROTECTED_ENTER_END(kbdev);
 		if (err) {
 			/*
 			 * Failed to switch into protected mode, resume
@@ -917,6 +955,10 @@ static int kbase_jm_enter_protected_mode(struct kbase_device *kbdev,
 				kbase_gpu_dequeue_atom(kbdev, js, NULL);
 				kbase_jm_return_atom_to_js(kbdev, katom[idx]);
 			}
+
+			/* Go back to configured model for IPA */
+			kbase_ipa_model_use_configured_locked(kbdev);
+
 			return -EINVAL;
 		}
 
@@ -932,7 +974,7 @@ static int kbase_jm_enter_protected_mode(struct kbase_device *kbdev,
 	}
 
 	return 0;
-#endif
+#endif	/* MALI_SEC_SECURE_RENDERING */
 }
 
 static int kbase_jm_exit_protected_mode(struct kbase_device *kbdev,
@@ -943,9 +985,12 @@ static int kbase_jm_exit_protected_mode(struct kbase_device *kbdev,
 #ifdef CONFIG_MALI_EXYNOS_SECURE_RENDERING
 	if (kbase_gpu_atoms_submitted_any(kbdev))
 		return -EAGAIN;
+
 	if (kbdev->protected_ops) {
 		/* Switch GPU to protected mode */
-		err = kbdev->protected_ops->protected_mode_reset(kbdev);
+		kbasep_js_cacheclean(kbdev);
+		err = kbdev->protected_ops->protected_mode_disable(
+				kbdev->protected_dev);
 
 		if (err)
 			dev_warn(kbdev->dev, "Failed to enable protected mode: %d\n",
@@ -957,6 +1002,7 @@ static int kbase_jm_exit_protected_mode(struct kbase_device *kbdev,
 #else
 	switch (katom[idx]->protected_state.exit) {
 	case KBASE_ATOM_EXIT_PROTECTED_CHECK:
+		KBASE_TLSTREAM_AUX_PROTECTED_LEAVE_START(kbdev);
 		/* The checks in KBASE_ATOM_GPU_RB_WAITING_PROTECTED_MODE_PREV
 		 * should ensure that we are not already transitiong, and that
 		 * there are no atoms currently on the GPU. */
@@ -1010,6 +1056,9 @@ static int kbase_jm_exit_protected_mode(struct kbase_device *kbdev,
 
 			kbase_vinstr_resume(kbdev->vinstr_ctx);
 
+			/* Use generic model for IPA in protected mode */
+			kbase_ipa_model_use_fallback_locked(kbdev);
+
 			return -EINVAL;
 		}
 
@@ -1019,25 +1068,17 @@ static int kbase_jm_exit_protected_mode(struct kbase_device *kbdev,
 		/* ***FALLTHROUGH: TRANSITION TO HIGHER STATE*** */
 
 	case KBASE_ATOM_EXIT_PROTECTED_RESET_WAIT:
-		if (kbase_reset_gpu_active(kbdev))
-			return -EAGAIN;
-
-		kbdev->protected_mode_transition = false;
-		kbdev->protected_mode = false;
-
-		/* protected mode sanity checks */
-		KBASE_DEBUG_ASSERT_MSG(
-			kbase_jd_katom_is_protected(katom[idx]) == kbase_gpu_in_protected_mode(kbdev),
-			"Protected mode of atom (%d) doesn't match protected mode of GPU (%d)",
-			kbase_jd_katom_is_protected(katom[idx]), kbase_gpu_in_protected_mode(kbdev));
-		KBASE_DEBUG_ASSERT_MSG(
-			(kbase_jd_katom_is_protected(katom[idx]) && js == 0) ||
-			!kbase_jd_katom_is_protected(katom[idx]),
-			"Protected atom on JS%d not supported", js);
+		/* A GPU reset is issued when exiting protected mode. Once the
+		 * reset is done all atoms' state will also be reset. For this
+		 * reason, if the atom is still in this state we can safely
+		 * say that the reset has not completed i.e., we have not
+		 * finished exiting protected mode yet.
+		 */
+		return -EAGAIN;
 	}
 
 	return 0;
-#endif
+#endif	/* MALI_SEC_SECURE_RENDERING */
 }
 
 void kbase_backend_slot_update(struct kbase_device *kbdev)
@@ -1288,6 +1329,16 @@ bool kbase_gpu_irq_evict(struct kbase_device *kbdev, int js)
 		kbase_reg_write(kbdev, JOB_SLOT_REG(js, JS_COMMAND_NEXT),
 				JS_COMMAND_NOP, NULL);
 		next_katom->gpu_rb_state = KBASE_ATOM_GPU_RB_READY;
+
+		KBASE_TLSTREAM_TL_NRET_ATOM_LPU(katom,
+				&kbdev->gpu_props.props.raw_props.js_features
+					[katom->slot_nr]);
+		KBASE_TLSTREAM_TL_NRET_ATOM_AS(katom, &kbdev->as
+					[katom->kctx->as_nr]);
+		KBASE_TLSTREAM_TL_NRET_CTX_LPU(katom->kctx,
+				&kbdev->gpu_props.props.raw_props.js_features
+					[katom->slot_nr]);
+
 		return true;
 	}
 
@@ -1311,14 +1362,20 @@ void kbase_gpu_complete_hw(struct kbase_device *kbdev, int js,
 	if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_TMIX_8438)) {
 		if (completion_code == BASE_JD_EVENT_STOPPED &&
 				(katom->atom_flags &
-				 KBASE_KATOM_FLAG_BEEN_HARD_STOPPED)) {
+				KBASE_KATOM_FLAG_BEEN_HARD_STOPPED)) {
 			completion_code = BASE_JD_EVENT_TERMINATED;
 		}
 	}
 
-	if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_6787) &&
+	if ((kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_6787) || (katom->core_req &
+					BASE_JD_REQ_SKIP_CACHE_END)) &&
 			completion_code != BASE_JD_EVENT_DONE &&
 			!(completion_code & BASE_JD_SW_EVENT)) {
+		/* When a job chain fails, on a T60x or when
+		 * BASE_JD_REQ_SKIP_CACHE_END is set, the GPU cache is not
+		 * flushed. To prevent future evictions causing possible memory
+		 * corruption we need to flush the cache manually before any
+		 * affected memory gets reused. */
 		katom->need_cache_flush_cores_retained = katom->affinity;
 		kbase_pm_request_cores(kbdev, false, katom->affinity);
 	} else if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_10676)) {
@@ -1339,15 +1396,6 @@ void kbase_gpu_complete_hw(struct kbase_device *kbdev, int js,
 
 	katom = kbase_gpu_dequeue_atom(kbdev, js, end_timestamp);
 	kbase_timeline_job_slot_done(kbdev, katom->kctx, katom, js, 0);
-	KBASE_TLSTREAM_TL_NRET_ATOM_LPU(
-			katom,
-			&kbdev->gpu_props.props.raw_props.js_features[
-				katom->slot_nr]);
-	KBASE_TLSTREAM_TL_NRET_ATOM_AS(katom, &kbdev->as[kctx->as_nr]);
-	KBASE_TLSTREAM_TL_NRET_CTX_LPU(
-			kctx,
-			&kbdev->gpu_props.props.raw_props.js_features[
-				katom->slot_nr]);
 
 	if (completion_code == BASE_JD_EVENT_STOPPED) {
 		struct kbase_jd_atom *next_katom = kbase_gpu_inspect(kbdev, js,
@@ -1514,6 +1562,9 @@ void kbase_backend_reset(struct kbase_device *kbdev, ktime_t *end_timestamp)
 
 	lockdep_assert_held(&kbdev->hwaccess_lock);
 
+	/* Reset should always take the GPU out of protected mode */
+	WARN_ON(kbase_gpu_in_protected_mode(kbdev));
+
 	for (js = 0; js < kbdev->gpu_props.num_job_slots; js++) {
 		int atom_idx = 0;
 		int idx;
@@ -1525,7 +1576,23 @@ void kbase_backend_reset(struct kbase_device *kbdev, ktime_t *end_timestamp)
 
 			if (!katom)
 				break;
+			if (katom->protected_state.exit ==
+					KBASE_ATOM_EXIT_PROTECTED_RESET_WAIT)
+			{
+				KBASE_TLSTREAM_AUX_PROTECTED_LEAVE_END(kbdev);
 
+				kbase_vinstr_resume(kbdev->vinstr_ctx);
+
+				/* protected mode sanity checks */
+				KBASE_DEBUG_ASSERT_MSG(
+					kbase_jd_katom_is_protected(katom) == kbase_gpu_in_protected_mode(kbdev),
+					"Protected mode of atom (%d) doesn't match protected mode of GPU (%d)",
+					kbase_jd_katom_is_protected(katom), kbase_gpu_in_protected_mode(kbdev));
+				KBASE_DEBUG_ASSERT_MSG(
+					(kbase_jd_katom_is_protected(katom) && js == 0) ||
+					!kbase_jd_katom_is_protected(katom),
+					"Protected atom on JS%d not supported", js);
+			}
 			if (katom->gpu_rb_state < KBASE_ATOM_GPU_RB_SUBMITTED)
 				keep_in_jm_rb = true;
 
@@ -1559,7 +1626,6 @@ void kbase_backend_reset(struct kbase_device *kbdev, ktime_t *end_timestamp)
 	}
 
 	kbdev->protected_mode_transition = false;
-	kbdev->protected_mode = false;
 }
 
 static inline void kbase_gpu_stop_atom(struct kbase_device *kbdev,
@@ -1811,13 +1877,11 @@ bool kbase_backend_soft_hard_stop_slot(struct kbase_device *kbdev,
 	return ret;
 }
 
-void kbase_gpu_cacheclean(struct kbase_device *kbdev,
-					struct kbase_jd_atom *katom)
+void kbase_gpu_cacheclean(struct kbase_device *kbdev)
 {
 	/* Limit the number of loops to avoid a hang if the interrupt is missed
 	 */
 	u32 max_loops = KBASE_CLEAN_CACHE_MAX_LOOPS;
-	unsigned long flags;
 
 	mutex_lock(&kbdev->cacheclean_lock);
 
@@ -1843,11 +1907,22 @@ void kbase_gpu_cacheclean(struct kbase_device *kbdev,
 	    "Instrumentation code was cleaning caches, but Job Management code cleared their IRQ - Instrumentation code will now hang.");
 
 	mutex_unlock(&kbdev->cacheclean_lock);
+}
 
-	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
-	kbase_pm_unrequest_cores(kbdev, false,
+void kbase_backend_cacheclean(struct kbase_device *kbdev,
+		struct kbase_jd_atom *katom)
+{
+	if (katom->need_cache_flush_cores_retained) {
+		unsigned long flags;
+
+		kbase_gpu_cacheclean(kbdev);
+
+		spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
+		kbase_pm_unrequest_cores(kbdev, false,
 					katom->need_cache_flush_cores_retained);
-	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+		spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+		katom->need_cache_flush_cores_retained = 0;
+	}
 }
 
 void kbase_backend_complete_wq(struct kbase_device *kbdev,
@@ -1857,10 +1932,7 @@ void kbase_backend_complete_wq(struct kbase_device *kbdev,
 	 * If cache flush required due to HW workaround then perform the flush
 	 * now
 	 */
-	if (katom->need_cache_flush_cores_retained) {
-		kbase_gpu_cacheclean(kbdev, katom);
-		katom->need_cache_flush_cores_retained = 0;
-	}
+	kbase_backend_cacheclean(kbdev, katom);
 
 	if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_10969)            &&
 	    (katom->core_req & BASE_JD_REQ_FS)                        &&
@@ -1910,11 +1982,8 @@ void kbase_backend_complete_wq_post_sched(struct kbase_device *kbdev,
 
 void kbase_gpu_dump_slots(struct kbase_device *kbdev)
 {
-	struct kbasep_js_device_data *js_devdata;
 	unsigned long flags;
 	int js;
-
-	js_devdata = &kbdev->js_data;
 
 	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
 

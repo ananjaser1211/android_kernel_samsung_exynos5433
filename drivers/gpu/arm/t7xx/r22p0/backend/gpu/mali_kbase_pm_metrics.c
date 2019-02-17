@@ -1,19 +1,24 @@
 /*
  *
- * (C) COPYRIGHT 2011-2016 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2011-2017 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 
 
@@ -89,10 +94,9 @@ int kbasep_pm_metrics_init(struct kbase_device *kbdev)
 	spin_lock_init(&kbdev->pm.backend.metrics.lock);
 
 	/* MALI_SEC_INTEGRATION */
-	if(kbdev->vendor_callbacks->pm_metrics_init)
+	if (kbdev->vendor_callbacks->pm_metrics_init)
 		kbdev->vendor_callbacks->pm_metrics_init(kbdev);
-	else
-	{
+	else {
 #ifdef CONFIG_MALI_MIDGARD_DVFS
 	kbdev->pm.backend.metrics.timer_active = true;
 	hrtimer_init(&kbdev->pm.backend.metrics.timer, CLOCK_MONOTONIC,
@@ -106,7 +110,7 @@ int kbasep_pm_metrics_init(struct kbase_device *kbdev)
 	}
 
 	/* MALI_SEC_INTEGRATION */
-	if(kbdev->vendor_callbacks->cl_boost_init)
+	if (kbdev->vendor_callbacks->cl_boost_init)
 		kbdev->vendor_callbacks->cl_boost_init(kbdev);
 
 	return 0;
@@ -129,7 +133,7 @@ void kbasep_pm_metrics_term(struct kbase_device *kbdev)
 #endif /* CONFIG_MALI_MIDGARD_DVFS */
 
 	/* MALI_SEC_INTEGRATION */
-	if(kbdev->vendor_callbacks->pm_metrics_term)
+	if (kbdev->vendor_callbacks->pm_metrics_term)
 		kbdev->vendor_callbacks->pm_metrics_term(kbdev);
 }
 
@@ -169,7 +173,7 @@ static void kbase_pm_get_dvfs_utilisation_calc(struct kbase_device *kbdev,
 	kbdev->pm.backend.metrics.time_period_start = now;
 }
 
-#if defined(CONFIG_PM_DEVFREQ_ARM) || defined(CONFIG_MALI_MIDGARD_DVFS)
+#if defined(CONFIG_MALI_DEVFREQ) || defined(CONFIG_MALI_MIDGARD_DVFS)
 /* Caller needs to hold kbdev->pm.backend.metrics.lock before calling this
  * function.
  */

@@ -1,19 +1,24 @@
 /*
  *
- * (C) COPYRIGHT 2015-2016 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2015-2017 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 #if !defined(_KBASE_TLSTREAM_H)
 #define _KBASE_TLSTREAM_H
@@ -38,7 +43,6 @@ void kbase_tlstream_term(void);
 /**
  * kbase_tlstream_acquire - acquire timeline stream file descriptor
  * @kctx:  kernel common context
- * @fd:    timeline stream file descriptor
  * @flags: timeline stream flags
  *
  * This descriptor is meant to be used by userspace timeline to gain access to
@@ -46,12 +50,11 @@ void kbase_tlstream_term(void);
  * timeline client.
  * Only one entity can own the descriptor at any given time. Descriptor shall be
  * closed if unused. If descriptor cannot be obtained (i.e. when it is already
- * being used) argument fd will contain negative value.
+ * being used) return will be a negative value.
  *
- * Return: zero on success (this does not necessarily mean that stream
- *         descriptor could be returned), negative number on error
+ * Return: file descriptor on success, negative number on error
  */
-int kbase_tlstream_acquire(struct kbase_context *kctx, int *fd, u32 flags);
+int kbase_tlstream_acquire(struct kbase_context *kctx, u32 flags);
 
 /**
  * kbase_tlstream_flush_streams - flush timeline streams.
@@ -136,7 +139,9 @@ void __kbase_tlstream_tl_attrib_atom_config(
 		void *atom, u64 jd, u64 affinity, u32 config);
 void __kbase_tlstream_tl_attrib_atom_priority(void *atom, u32 prio);
 void __kbase_tlstream_tl_attrib_atom_state(void *atom, u32 state);
-void __kbase_tlstream_tl_attrib_atom_priority_change(void *atom);
+void __kbase_tlstream_tl_attrib_atom_prioritized(void *atom);
+void __kbase_tlstream_tl_attrib_atom_jit(
+		void *atom, u64 edit_addr, u64 new_addr);
 void __kbase_tlstream_tl_attrib_as_config(
 		void *as, u64 transtab, u64 memattr, u64 transcfg);
 void __kbase_tlstream_tl_event_atom_softstop_ex(void *atom);
@@ -147,6 +152,10 @@ void __kbase_tlstream_aux_pm_state(u32 core_type, u64 state);
 void __kbase_tlstream_aux_pagefault(u32 ctx_nr, u64 page_count_change);
 void __kbase_tlstream_aux_pagesalloc(u32 ctx_nr, u64 page_count);
 void __kbase_tlstream_aux_devfreq_target(u64 target_freq);
+void __kbase_tlstream_aux_protected_enter_start(void *gpu);
+void __kbase_tlstream_aux_protected_enter_end(void *gpu);
+void __kbase_tlstream_aux_protected_leave_start(void *gpu);
+void __kbase_tlstream_aux_protected_leave_end(void *gpu);
 
 #define TLSTREAM_ENABLED (1 << 31)
 
@@ -164,6 +173,13 @@ extern atomic_t kbase_tlstream_enabled;
 		int enabled = atomic_read(&kbase_tlstream_enabled);     \
 		if (enabled & BASE_TLSTREAM_ENABLE_LATENCY_TRACEPOINTS) \
 			__kbase_tlstream_##trace_name(__VA_ARGS__);     \
+	} while (0)
+
+#define __TRACE_IF_ENABLED_JD(trace_name, ...)                      \
+	do {                                                        \
+		int enabled = atomic_read(&kbase_tlstream_enabled); \
+		if (enabled & BASE_TLSTREAM_JOB_DUMPING_ENABLED)    \
+			__kbase_tlstream_##trace_name(__VA_ARGS__); \
 	} while (0)
 
 /*****************************************************************************/
@@ -469,13 +485,22 @@ extern atomic_t kbase_tlstream_enabled;
 	__TRACE_IF_ENABLED_LATENCY(tl_attrib_atom_state, atom, state)
 
 /**
- * KBASE_TLSTREAM_TL_ATTRIB_ATOM_PRIORITY_CHANGE - atom caused priority change
+ * KBASE_TLSTREAM_TL_ATTRIB_ATOM_PRIORITIZED - atom was prioritized
  * @atom:  name of the atom object
  *
  * Function emits a timeline message signalling priority change
  */
-#define KBASE_TLSTREAM_TL_ATTRIB_ATOM_PRIORITY_CHANGE(atom) \
-	__TRACE_IF_ENABLED_LATENCY(tl_attrib_atom_priority_change, atom)
+#define KBASE_TLSTREAM_TL_ATTRIB_ATOM_PRIORITIZED(atom) \
+	__TRACE_IF_ENABLED_LATENCY(tl_attrib_atom_prioritized, atom)
+
+/**
+ * KBASE_TLSTREAM_TL_ATTRIB_ATOM_JIT - jit happened on atom
+ * @atom:       atom identifier
+ * @edit_addr:  address edited by jit
+ * @new_addr:   address placed into the edited location
+ */
+#define KBASE_TLSTREAM_TL_ATTRIB_ATOM_JIT(atom, edit_addr, new_addr) \
+	__TRACE_IF_ENABLED_JD(tl_attrib_atom_jit, atom, edit_addr, new_addr)
 
 /**
  * KBASE_TLSTREAM_TL_ATTRIB_AS_CONFIG - address space attributes
@@ -520,6 +545,7 @@ extern atomic_t kbase_tlstream_enabled;
 #define KBASE_TLSTREAM_JD_GPU_SOFT_RESET(gpu) \
 	__TRACE_IF_ENABLED(jd_gpu_soft_reset, gpu)
 
+
 /**
  * KBASE_TLSTREAM_AUX_PM_STATE - timeline message: power management state
  * @core_type: core type (shader, tiler, l2 cache, l3 cache)
@@ -553,6 +579,50 @@ extern atomic_t kbase_tlstream_enabled;
  */
 #define KBASE_TLSTREAM_AUX_DEVFREQ_TARGET(target_freq) \
 	__TRACE_IF_ENABLED(aux_devfreq_target, target_freq)
+
+/**
+ * KBASE_TLSTREAM_AUX_PROTECTED_ENTER_START - The GPU has started transitioning
+ *                                            to protected mode
+ * @gpu: name of the GPU object
+ *
+ * Function emits a timeline message indicating the GPU is starting to
+ * transition to protected mode.
+ */
+#define KBASE_TLSTREAM_AUX_PROTECTED_ENTER_START(gpu) \
+	__TRACE_IF_ENABLED_LATENCY(aux_protected_enter_start, gpu)
+
+/**
+ * KBASE_TLSTREAM_AUX_PROTECTED_ENTER_END - The GPU has finished transitioning
+ *                                          to protected mode
+ * @gpu: name of the GPU object
+ *
+ * Function emits a timeline message indicating the GPU has finished
+ * transitioning to protected mode.
+ */
+#define KBASE_TLSTREAM_AUX_PROTECTED_ENTER_END(gpu) \
+	__TRACE_IF_ENABLED_LATENCY(aux_protected_enter_end, gpu)
+
+/**
+ * KBASE_TLSTREAM_AUX_PROTECTED_LEAVE_START - The GPU has started transitioning
+ *                                            to non-protected mode
+ * @gpu: name of the GPU object
+ *
+ * Function emits a timeline message indicating the GPU is starting to
+ * transition to non-protected mode.
+ */
+#define KBASE_TLSTREAM_AUX_PROTECTED_LEAVE_START(gpu) \
+	__TRACE_IF_ENABLED_LATENCY(aux_protected_leave_start, gpu)
+
+/**
+ * KBASE_TLSTREAM_AUX_PROTECTED_LEAVE_END - The GPU has finished transitioning
+ *                                          to non-protected mode
+ * @gpu: name of the GPU object
+ *
+ * Function emits a timeline message indicating the GPU has finished
+ * transitioning to non-protected mode.
+ */
+#define KBASE_TLSTREAM_AUX_PROTECTED_LEAVE_END(gpu) \
+	__TRACE_IF_ENABLED_LATENCY(aux_protected_leave_end, gpu)
 
 #endif /* _KBASE_TLSTREAM_H */
 

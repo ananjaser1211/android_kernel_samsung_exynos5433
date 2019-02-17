@@ -1,19 +1,24 @@
 /*
  *
- * (C) COPYRIGHT 2010-2017 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2010-2016 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 /*
  * Power policy API implementations
@@ -35,12 +40,16 @@ static const struct kbase_pm_policy *const policy_list[] = {
 	&kbase_pm_fast_start_policy_ops,
 #endif
 #else				/* CONFIG_MALI_NO_MALI */
+#if !PLATFORM_POWER_DOWN_ONLY
 	&kbase_pm_demand_policy_ops,
-	&kbase_pm_always_on_policy_ops,
+#endif /* !PLATFORM_POWER_DOWN_ONLY */
 	&kbase_pm_coarse_demand_policy_ops,
+	&kbase_pm_always_on_policy_ops,
 #if !MALI_CUSTOMER_RELEASE
+#if !PLATFORM_POWER_DOWN_ONLY
 	&kbase_pm_demand_always_powered_policy_ops,
 	&kbase_pm_fast_start_policy_ops,
+#endif /* !PLATFORM_POWER_DOWN_ONLY */
 #endif
 #endif /* CONFIG_MALI_NO_MALI */
 };
@@ -285,7 +294,7 @@ int kbase_pm_policy_init(struct kbase_device *kbdev)
 	/* MALI_SEC_INTEGRATION */
 	/* alloc_workqueue option is changed to ordered */
 	wq = alloc_workqueue("kbase_pm_do_poweroff",
-			WQ_HIGHPRI | WQ_UNBOUND | __WQ_ORDERED , 1);
+			WQ_HIGHPRI | WQ_UNBOUND | __WQ_ORDERED, 1);
 	if (!wq)
 		return -ENOMEM;
 
@@ -296,8 +305,8 @@ int kbase_pm_policy_init(struct kbase_device *kbdev)
 			CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	kbdev->pm.backend.gpu_poweroff_timer.function =
 			kbasep_pm_do_gpu_poweroff_callback;
-	/* MALI_SEC_INTEGRATION */
-	kbdev->pm.backend.pm_current_policy = policy_list[2];
+	/* MALI_SEC_INTEGRATION : using coarse_demand policy */
+	kbdev->pm.backend.pm_current_policy = policy_list[1];
 	kbdev->pm.backend.pm_current_policy->init(kbdev);
 	kbdev->pm.gpu_poweroff_time =
 			HR_TIMER_DELAY_NSEC(DEFAULT_PM_GPU_POWEROFF_TICK_NS);
@@ -333,34 +342,6 @@ void kbase_pm_cancel_deferred_poweroff(struct kbase_device *kbdev)
 	kbdev->pm.backend.shader_poweroff_pending_time = 0;
 
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
-}
-
-void kbase_pm_keep_active_nolock(struct kbase_device *kbdev)
-{
-	struct kbase_pm_device_data *pm = &kbdev->pm;
-	struct kbase_pm_backend_data *backend = &pm->backend;
-
-	lockdep_assert_held(&kbdev->hwaccess_lock);
-	lockdep_assert_held(&pm->lock);
-
-	/* pm_current_policy will never be NULL while pm.lock is held */
-	KBASE_DEBUG_ASSERT(backend->pm_current_policy);
-	KBASE_DEBUG_ASSERT(backend->pm_current_policy->get_core_active(kbdev));
-
-	/* ensure any power-offs are cancelled */
-	if (backend->gpu_poweroff_pending) {
-		/* Cancel any pending power off request */
-		backend->gpu_poweroff_pending = 0;
-
-		/* If a request was pending then the GPU was still
-		 * powered, so no need to continue */
-		if (!kbdev->poweroff_pending)
-			return;
-	}
-
-	/* Cancel any poweroff that is set up */
-	if (pm->backend.poweroff_wait_in_progress)
-		pm->backend.poweron_required = true;
 }
 
 void kbase_pm_update_active(struct kbase_device *kbdev)
@@ -934,12 +915,10 @@ void kbase_pm_request_cores_sync(struct kbase_device *kbdev,
 					u64 shader_cores)
 {
 	unsigned long flags;
-
 /* MALI_SEC_INTEGRATION */
 /*
 	kbase_pm_wait_for_poweroff_complete(kbdev);
 */
-
 	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
 	kbase_pm_request_cores(kbdev, tiler_required, shader_cores);
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);

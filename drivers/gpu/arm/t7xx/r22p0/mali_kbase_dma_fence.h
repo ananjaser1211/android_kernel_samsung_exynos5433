@@ -1,47 +1,38 @@
 /*
  *
- * (C) COPYRIGHT 2010-2016 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2010-2017 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 #ifndef _KBASE_DMA_FENCE_H_
 #define _KBASE_DMA_FENCE_H_
 
 #ifdef CONFIG_MALI_DMA_FENCE
 
-#include <linux/fence.h>
 #include <linux/list.h>
 #include <linux/reservation.h>
+#include <mali_kbase_fence.h>
 
 
 /* Forward declaration from mali_kbase_defs.h */
 struct kbase_jd_atom;
 struct kbase_context;
-
-/**
- * struct kbase_dma_fence_cb - Mali dma-fence callback data struct
- * @fence_cb: Callback function
- * @katom:    Pointer to katom that is waiting on this callback
- * @fence:    Pointer to the fence object on which this callback is waiting
- * @node:     List head for linking this callback to the katom
- */
-struct kbase_dma_fence_cb {
-	struct fence_cb fence_cb;
-	struct kbase_jd_atom *katom;
-	struct fence *fence;
-	struct list_head node;
-};
 
 /**
  * struct kbase_dma_fence_resv_info - Structure with list of reservation objects
@@ -131,11 +122,6 @@ void kbase_dma_fence_term(struct kbase_context *kctx);
  */
 int kbase_dma_fence_init(struct kbase_context *kctx);
 
-/**
- * kbase_dma_fence_waiters_remove()- Remove katom from dma-fence wait list
- * @katom: Pointer to katom to remove from list
- */
-void kbase_dma_fence_waiters_remove(struct kbase_jd_atom *katom);
 
 #else /* CONFIG_MALI_DMA_FENCE */
 /* Dummy functions for when dma-buf fence isn't enabled. */

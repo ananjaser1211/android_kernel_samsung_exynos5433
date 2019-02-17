@@ -7,13 +7,18 @@
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 
 
@@ -122,7 +127,7 @@ void kbase_timeline_job_slot_submit(struct kbase_device *kbdev, struct kbase_con
 	lockdep_assert_held(&kbdev->hwaccess_lock);
 
 	if (kbdev->timeline.slot_atoms_submitted[js] > 0) {
-	/* MALI_SEC_INTEGRATION */
+		/* MALI_SEC_INTEGRATION */
 		base_atom_id atom_number = kbase_jd_atom_id(kctx, katom);
 		KBASE_TIMELINE_JOB_START_NEXT(kctx, js, 1);
 		KBASE_TIMELINE_JOB_START(kctx, js, atom_number);

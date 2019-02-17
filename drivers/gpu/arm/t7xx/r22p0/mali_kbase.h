@@ -1,19 +1,24 @@
 /*
  *
- * (C) COPYRIGHT 2010-2016 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2010-2017 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 
 
@@ -24,17 +29,18 @@
 
 #include <mali_kbase_debug.h>
 
-#include <asm/page.h>
-
 #include <linux/atomic.h>
 #include <linux/highmem.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/list.h>
-#include <linux/mm_types.h>
+#include <linux/mm.h>
 #include <linux/mutex.h>
 #include <linux/rwsem.h>
 #include <linux/sched.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0))
+#include <linux/sched/mm.h>
+#endif
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/vmalloc.h>
@@ -42,7 +48,8 @@
 #include <linux/workqueue.h>
 
 #include "mali_base_kernel.h"
-#include <mali_kbase_uku.h>
+/* MALI_SEC_INTEGRATION*/
+#include <mali_uk.h>
 #include <mali_kbase_linux.h>
 
 /*
@@ -65,9 +72,16 @@
 #include "mali_kbase_gpuprops.h"
 #include "mali_kbase_jm.h"
 #include "mali_kbase_vinstr.h"
-#include "mali_kbase_ipa.h"
+
+#include "ipa/mali_kbase_ipa.h"
+
 #ifdef CONFIG_GPU_TRACEPOINTS
 #include <trace/events/gpu.h>
+#endif
+
+#ifndef u64_to_user_ptr
+/* Introduced in Linux v4.6 */
+#define u64_to_user_ptr(x) ((void __user *)(uintptr_t)x)
 #endif
 
 /*{ SRUK-MALI_SYSTRACE_SUPPORT*/
@@ -85,24 +99,20 @@
 #define SYSTRACE_EVENT_TYPE_RESUME  4
 
 enum {
-        GPU_UNIT_NONE = 0,
-        GPU_UNIT_VP,
-        GPU_UNIT_FP,
-        GPU_UNIT_CL,
-        NUMBER_OF_GPU_UNITS
+	GPU_UNIT_NONE = 0,
+	GPU_UNIT_VP,
+	GPU_UNIT_FP,
+	GPU_UNIT_CL,
+	NUMBER_OF_GPU_UNITS
 };
 
 void kbase_systrace_mali_job_slots_event(u8 job_event, u8 job_slot, const struct kbase_context *kctx, u8 atom_id, u64 start_timestamp, u8 dep_0_id, u8 dep_0_type, u8 dep_1_id, u8 dep_1_type, u32 gles_ctx_handle);
 
-#endif //CONFIG_MALI_SYSTRACE_SUPPORT
+#endif /* CONFIG_MALI_SYSTRACE_SUPPORT */
 /* SRUK-MALI_SYSTRACE_SUPPORT }*/
 
-/**
- * @page page_base_kernel_main Kernel-side Base (KBase) APIs
- */
-
-/**
- * @defgroup base_kbase_api Kernel-side Base (KBase) APIs
+/*
+ * Kernel-side Base (KBase) APIs
  */
 
 struct kbase_device *kbase_device_alloc(void);
@@ -130,22 +140,70 @@ void kbase_release_device(struct kbase_device *kbdev);
 
 void kbase_set_profiling_control(struct kbase_device *kbdev, u32 control, u32 value);
 
-u32 kbase_get_profiling_control(struct kbase_device *kbdev, u32 control);
-
 struct kbase_context *
 kbase_create_context(struct kbase_device *kbdev, bool is_compat);
 void kbase_destroy_context(struct kbase_context *kctx);
 
+
+/**
+ * kbase_get_unmapped_area() - get an address range which is currently
+ *                             unmapped.
+ * @filp: File operations associated with kbase device.
+ * @addr: CPU mapped address (set to 0 since MAP_FIXED mapping is not allowed
+ *        as Mali GPU driver decides about the mapping).
+ * @len: Length of the address range.
+ * @pgoff: Page offset within the GPU address space of the kbase context.
+ * @flags: Flags for the allocation.
+ *
+ * Finds the unmapped address range which satisfies requirements specific to
+ * GPU and those provided by the call parameters.
+ *
+ * 1) Requirement for allocations greater than 2MB:
+ * - alignment offset is set to 2MB and the alignment mask to 2MB decremented
+ * by 1.
+ *
+ * 2) Requirements imposed for the shader memory alignment:
+ * - alignment is decided by the number of GPU pc bits which can be read from
+ * GPU properties of the device associated with this kbase context; alignment
+ * offset is set to this value in bytes and the alignment mask to the offset
+ * decremented by 1.
+ * - allocations must not to be at 4GB boundaries. Such cases are indicated
+ * by the flag KBASE_REG_GPU_NX not being set (check the flags of the kbase
+ * region). 4GB boundaries can be checked against @ref BASE_MEM_MASK_4GB.
+ *
+ * 3) Requirements imposed for tiler memory alignment, cases indicated by
+ * the flag @ref KBASE_REG_TILER_ALIGN_TOP (check the flags of the kbase
+ * region):
+ * - alignment offset is set to the difference between the kbase region
+ * extent (converted from the original value in pages to bytes) and the kbase
+ * region initial_commit (also converted from the original value in pages to
+ * bytes); alignment mask is set to the kbase region extent in bytes and
+ * decremented by 1.
+ *
+ * Return: if successful, address of the unmapped area aligned as required;
+ *         error code (negative) in case of failure;
+ */
+unsigned long kbase_get_unmapped_area(struct file *filp,
+		const unsigned long addr, const unsigned long len,
+		const unsigned long pgoff, const unsigned long flags);
+
 int kbase_jd_init(struct kbase_context *kctx);
 void kbase_jd_exit(struct kbase_context *kctx);
-#ifdef BASE_LEGACY_UK6_SUPPORT
+
+/**
+ * kbase_jd_submit - Submit atoms to the job dispatcher
+ *
+ * @kctx: The kbase context to submit to
+ * @user_addr: The address in user space of the struct base_jd_atom_v2 array
+ * @nr_atoms: The number of atoms in the array
+ * @stride: sizeof(struct base_jd_atom_v2)
+ * @uk6_atom: true if the atoms are legacy atoms (struct base_jd_atom_v2_uk6)
+ *
+ * Return: 0 on success or error code
+ */
 int kbase_jd_submit(struct kbase_context *kctx,
-		const struct kbase_uk_job_submit *submit_data,
-		int uk6_atom);
-#else
-int kbase_jd_submit(struct kbase_context *kctx,
-		const struct kbase_uk_job_submit *submit_data);
-#endif
+		void __user *user_addr, u32 nr_atoms, u32 stride,
+		bool uk6_atom);
 
 /**
  * kbase_jd_done_worker - Handle a job completion
@@ -180,8 +238,6 @@ void kbase_jd_dep_clear_locked(struct kbase_jd_atom *katom);
 
 void kbase_job_done(struct kbase_device *kbdev, u32 done);
 
-void kbase_gpu_cacheclean(struct kbase_device *kbdev,
-					struct kbase_jd_atom *katom);
 /**
  * kbase_job_slot_ctx_priority_check_locked(): - Check for lower priority atoms
  *                                               and soft stop them
@@ -221,8 +277,10 @@ int kbase_prepare_soft_job(struct kbase_jd_atom *katom);
 void kbase_finish_soft_job(struct kbase_jd_atom *katom);
 void kbase_cancel_soft_job(struct kbase_jd_atom *katom);
 void kbase_resume_suspended_soft_jobs(struct kbase_device *kbdev);
-void kbasep_add_waiting_soft_job(struct kbase_jd_atom *katom);
 void kbasep_remove_waiting_soft_job(struct kbase_jd_atom *katom);
+#if defined(CONFIG_SYNC) || defined(CONFIG_SYNC_FILE)
+void kbase_soft_event_wait_callback(struct kbase_jd_atom *katom);
+#endif
 int kbase_soft_event_update(struct kbase_context *kctx,
 			    u64 event,
 			    unsigned char new_status);
@@ -238,6 +296,7 @@ int kbase_device_trace_buffer_install(
 		struct kbase_context *kctx, u32 *tb, size_t size);
 void kbase_device_trace_buffer_uninstall(struct kbase_context *kctx);
 
+/* MALI_SEC_INTEGRATION */
 /* api to be ported per OS, only need to do the raw register access */
 void kbase_os_reg_write(struct kbase_device *kbdev, u16 offset, u32 value);
 u32 kbase_os_reg_read(struct kbase_device *kbdev, u16 offset);
@@ -579,18 +638,6 @@ void kbasep_trace_clear(struct kbase_device *kbdev);
 /** PRIVATE - do not use directly. Use KBASE_TRACE_DUMP() instead */
 void kbasep_trace_dump(struct kbase_device *kbdev);
 
-#ifdef CONFIG_MALI_DEBUG
-/**
- * kbase_set_driver_inactive - Force driver to go inactive
- * @kbdev:    Device pointer
- * @inactive: true if driver should go inactive, false otherwise
- *
- * Forcing the driver inactive will cause all future IOCTLs to wait until the
- * driver is made active again. This is intended solely for the use of tests
- * which require that no jobs are running while the test executes.
- */
-void kbase_set_driver_inactive(struct kbase_device *kbdev, bool inactive);
-#endif /* CONFIG_MALI_DEBUG */
 /* MALI_SEC_INTEGRATION */
 void gpu_dump_register_hooks(struct kbase_device *kbdev);
 
@@ -645,3 +692,6 @@ int kbase_io_history_resize(struct kbase_io_history *h, u16 new_size);
 
 
 #endif
+
+
+

@@ -252,7 +252,10 @@ void dvfs_hwcnt_utilization_equation(struct kbase_device *kbdev)
 		kbdev->hwcnt.cnt_for_bt_start = 0;
 		return;
 	}
-	if ((arith * 10 > ls * 14) && (ls < 40) && (total_util > 1000) && (total_util < 4800) &&
+	if ((((arith * 10 > ls * 14) && (ls < 40)) ||
+		((arith > 55) && (ls > 54) && (tex < 53)) ||
+		((arith > 61) && (ls > 54) && (tex < 45))) &&
+		(total_util > 1000) && (total_util < 6100) &&
 			(platform->cur_clock >= platform->gpu_max_clock_limit)) {
 		kbdev->hwcnt.cnt_for_bt_start++;
 		kbdev->hwcnt.cnt_for_bt_stop = 0;

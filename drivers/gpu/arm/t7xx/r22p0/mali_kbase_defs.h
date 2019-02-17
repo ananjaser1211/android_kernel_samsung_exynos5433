@@ -1,19 +1,24 @@
 /*
  *
- * (C) COPYRIGHT 2011-2016 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2011-2017 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 
 
@@ -32,37 +37,35 @@
 #include <mali_base_hwconfig_issues.h>
 #include <mali_kbase_mem_lowlevel.h>
 #include <mali_kbase_mmu_hw.h>
-#include <mali_kbase_mmu_mode.h>
 #include <mali_kbase_instr_defs.h>
 #include <mali_kbase_pm.h>
+#include <mali_kbase_gpuprops_types.h>
+#include <protected_mode_switcher.h>
 
 #include <linux/atomic.h>
 #include <linux/mempool.h>
 #include <linux/slab.h>
 #include <linux/file.h>
+#include <linux/sizes.h>
 
 #ifdef CONFIG_MALI_FPGA_BUS_LOGGER
 #include <linux/bus_logger.h>
 #endif
 
 
-#ifdef CONFIG_KDS
-#include <linux/kds.h>
-#endif				/* CONFIG_KDS */
-
-#ifdef CONFIG_SYNC
-#include "sync.h"
-#endif				/* CONFIG_SYNC */
-
-#include "mali_kbase_dma_fence.h"
+#if defined(CONFIG_SYNC)
+#include <sync.h>
+#else
+#include "mali_kbase_fence_defs.h"
+#endif
 
 #ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
 #endif				/* CONFIG_DEBUG_FS */
 
-#ifdef CONFIG_PM_DEVFREQ_ARM
+#ifdef CONFIG_MALI_DEVFREQ
 #include <linux/devfreq.h>
-#endif /* CONFIG_DEVFREQ */
+#endif /* CONFIG_MALI_DEVFREQ */
 
 #include <linux/clk.h>
 #include <linux/regulator/consumer.h>
@@ -144,13 +147,15 @@
 /* mmu */
 #define MIDGARD_MMU_VA_BITS 48
 
+#define MIDGARD_MMU_LEVEL(x) (x)
+
 #if MIDGARD_MMU_VA_BITS > 39
-#define MIDGARD_MMU_TOPLEVEL    0
+#define MIDGARD_MMU_TOPLEVEL    MIDGARD_MMU_LEVEL(0)
 #else
-#define MIDGARD_MMU_TOPLEVEL    1
+#define MIDGARD_MMU_TOPLEVEL    MIDGARD_MMU_LEVEL(1)
 #endif
 
-#define MIDGARD_MMU_BOTTOMLEVEL 3
+#define MIDGARD_MMU_BOTTOMLEVEL MIDGARD_MMU_LEVEL(3)
 
 #define GROWABLE_FLAGS_REQUIRED (KBASE_REG_PF_GROW | KBASE_REG_GPU_WR)
 
@@ -225,6 +230,12 @@
 #define KBASE_SERIALIZE_INTER_SLOT (1 << 1)
 /* Reset the GPU after each atom completion */
 #define KBASE_SERIALIZE_RESET (1 << 2)
+
+/* Forward declarations */
+struct kbase_context;
+struct kbase_device;
+struct kbase_as;
+struct kbase_mmu_setup;
 
 #ifdef CONFIG_DEBUG_FS
 struct base_job_fault_event {
@@ -413,18 +424,17 @@ struct kbase_ext_res {
 	struct kbase_mem_phy_alloc *alloc;
 };
 
+/* MALI_SEC_INTEGRATION */
 /*{ SRUK-MALI_SYSTRACE_SUPPORT*/
-struct kbase_atom_dependency_systrace
-{
-    unsigned int dep_atom_id;
-    unsigned int dep_atom_dependency_type;
+struct kbase_atom_dependency_systrace {
+	unsigned int dep_atom_id;
+	unsigned int dep_atom_dependency_type;
 };
 /* SRUK-MALI_SYSTRACE_SUPPORT }*/
 
 struct kbase_jd_atom {
 	struct work_struct work;
 	ktime_t start_timestamp;
-	u64 time_spent_us; /**< Total time spent on the GPU in microseconds */
 
 	struct base_jd_udata udata;
 	struct kbase_context *kctx;
@@ -446,13 +456,11 @@ struct kbase_jd_atom {
 	u32 device_nr;
 	u64 affinity;
 	u64 jc;
+	/* Copy of data read from the user space buffer that jc points to */
+	void *softjob_data;
 	enum kbase_atom_coreref_state coreref_state;
-#ifdef CONFIG_KDS
-	struct list_head node;
-	struct kds_resource_set *kds_rset;
-	bool kds_dep_satisfied;
-#endif				/* CONFIG_KDS */
-#ifdef CONFIG_SYNC
+#if defined(CONFIG_SYNC)
+	/* Stores either an input or output fence, depending on soft-job type */
 	struct sync_fence *fence;
 	struct sync_fence_waiter sync_waiter;
 /* MALI_SEC_INTEGRATION */
@@ -460,12 +468,21 @@ struct kbase_jd_atom {
 	struct mutex fence_mt;
 	struct timer_list fence_timer;
 #endif				/* CONFIG_SYNC */
-
-#ifdef CONFIG_MALI_DMA_FENCE
+#if defined(CONFIG_MALI_DMA_FENCE) || defined(CONFIG_SYNC_FILE)
 	struct {
-		/* This points to the dma-buf fence for this atom. If this is
-		 * NULL then there is no fence for this atom and the other
-		 * fields related to dma_fence may have invalid data.
+		/* Use the functions/API defined in mali_kbase_fence.h to
+		 * when working with this sub struct */
+#if defined(CONFIG_SYNC_FILE)
+		/* Input fence */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
+		struct fence *fence_in;
+#else
+		struct dma_fence *fence_in;
+#endif
+#endif
+		/* This points to the dma-buf output fence for this atom. If
+		 * this is NULL then there is no fence for this atom and the
+		 * following fields related to dma_fence may have invalid data.
 		 *
 		 * The context and seqno fields contain the details for this
 		 * fence.
@@ -474,7 +491,11 @@ struct kbase_jd_atom {
 		 * regardless of the event_code of the katom (signal also on
 		 * failure).
 		 */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
 		struct fence *fence;
+#else
+		struct dma_fence *fence;
+#endif
 		/* The dma-buf fence context number for this atom. A unique
 		 * context number is allocated to each katom in the context on
 		 * context creation.
@@ -513,15 +534,11 @@ struct kbase_jd_atom {
 		 */
 		atomic_t dep_count;
 	} dma_fence;
-#endif /* CONFIG_MALI_DMA_FENCE */
+#endif /* CONFIG_MALI_DMA_FENCE || CONFIG_SYNC_FILE*/
 
 	/* Note: refer to kbasep_js_atom_retained_state, which will take a copy of some of the following members */
 	enum base_jd_event_code event_code;
 	base_jd_core_req core_req;	    /**< core requirements */
-	/** Job Slot to retry submitting to if submission from IRQ handler failed
-	 *
-	 * NOTE: see if this can be unified into the another member e.g. the event */
-	int retry_submit_on_slot;
 
 	u32 ticks;
 	/* JS atom priority with respect to other atoms on its kctx. */
@@ -568,18 +585,18 @@ struct kbase_jd_atom {
 	struct base_job_fault_event fault_event;
 #endif
 
-/*{ SRUK-MALI_SYSTRACE_SUPPORT*/
-    struct kbase_atom_dependency_systrace kbase_atom_dep_systrace[2];
-    /* katom->start_timestamp can change before job done so, it is not unique to be used as systrace event.
-         * So, this value is stored here to preserve key from corresponding event start and event end.
-         */
-    s64 start_timestamp_for_systrace_key;
-    u32 gles_ctx_handle;
-    u32 frame_number;
-    void* surfacep;
-/* SRUK-MALI_SYSTRACE_SUPPORT }*/
+	/*{ SRUK-MALI_SYSTRACE_SUPPORT*/
+	struct kbase_atom_dependency_systrace kbase_atom_dep_systrace[2];
+	/* katom->start_timestamp can change before job done so, it is not unique to be used as systrace event.
+	 * So, this value is stored here to preserve key from corresponding event start and event end.
+	 */
+	s64 start_timestamp_for_systrace_key;
+	u32 gles_ctx_handle;
+	u32 frame_number;
+	void *surfacep;
+	/* SRUK-MALI_SYSTRACE_SUPPORT }*/
 
-	/* List head used for two different purposes:
+	/* List head used for three different purposes:
 	 *  1. Overflow list for JS ring buffers. If an atom is ready to run,
 	 *     but there is no room in the JS ring buffer, then the atom is put
 	 *     on the ring buffer's overflow list using this list node.
@@ -587,7 +604,10 @@ struct kbase_jd_atom {
 	 */
 	struct list_head queue;
 
-	struct kbase_va_region *jit_addr_reg;
+	/* Used to keep track of all JIT free/alloc jobs in submission order
+	 */
+	struct list_head jit_node;
+	bool jit_blocked;
 
 	/* If non-zero, this indicates that the atom will fail with the set
 	 * event_code when the atom is processed. */
@@ -660,9 +680,6 @@ struct kbase_jd_context {
 	u32 *tb;
 	size_t tb_wrap_offset;
 
-#ifdef CONFIG_KDS
-	struct kds_callback kds_cb;
-#endif				/* CONFIG_KDS */
 #ifdef CONFIG_GPU_TRACEPOINTS
 	atomic_t work_id;
 #endif
@@ -922,80 +939,6 @@ struct kbase_pm_device_data {
 	struct kbase_pm_backend_data backend;
 };
 
-/**
- * struct kbase_protected_ops - Platform specific functions for GPU protected
- * mode operations
- * @protected_mode_enter: Callback to enter protected mode on the GPU
- * @protected_mode_reset: Callback to reset the GPU and exit protected mode.
- * @protected_mode_supported: Callback to check if protected mode is supported.
- */
-
-#ifdef CONFIG_MALI_EXYNOS_SECURE_RENDERING
-struct kbase_protected_ops {
-	/**
-	 * protected_mode_enter() - Enter protected mode on the GPU
-	 * @kbdev:	The kbase device
-	 *
-	 * Return: 0 on success, non-zero on error
-	 */
-	int (*protected_mode_enter)(struct kbase_device *kbdev);
-
-	/**
-	 * protected_mode_reset() - Reset the GPU and exit protected mode
-	 * @kbdev:	The kbase device
-	 *
-	 * Return: 0 on success, non-zero on error
-	 */
-	int (*protected_mode_reset)(struct kbase_device *kbdev);
-
-	/**
-	 * protected_mode_supported() - Check if protected mode is supported
-	 * @kbdev:	The kbase device
-	 *
-	 * Return: 0 on success, non-zero on error
-	 */
-	bool (*protected_mode_supported)(struct kbase_device *kbdev);
-
-    /** Platform specific function for setting the Memory to secure mode.
-     *
-     * Return 0 if successful, otherwise error
-     */
-    int (*secure_mem_enable)(struct kbase_device *kbdev, int ion_fd, u64 flags, struct kbase_va_region *reg);
-
-    /** Platform specific function for setting the Memory back to normal mode.
-     *
-     * Return 0 if successful, otherwise error
-     */
-    int (*secure_mem_disable)(struct kbase_device *kbdev, struct kbase_va_region *reg);
-};
-#else
-struct kbase_protected_ops {
-	/**
-	 * protected_mode_enter() - Enter protected mode on the GPU
-	 * @kbdev:	The kbase device
-	 *
-	 * Return: 0 on success, non-zero on error
-	 */
-	int (*protected_mode_enter)(struct kbase_device *kbdev);
-
-	/**
-	 * protected_mode_reset() - Reset the GPU and exit protected mode
-	 * @kbdev:	The kbase device
-	 *
-	 * Return: 0 on success, non-zero on error
-	 */
-	int (*protected_mode_reset)(struct kbase_device *kbdev);
-
-	/**
-	 * protected_mode_supported() - Check if protected mode is supported
-	 * @kbdev:	The kbase device
-	 *
-	 * Return: 0 on success, non-zero on error
-	 */
-	bool (*protected_mode_supported)(struct kbase_device *kbdev);
-};
-#endif
-
 /* MALI_SEC_SECURE_RENDERING */
 #ifdef CONFIG_MALI_SEC_ASP_SECURE_BUF_CTRL
 typedef struct sec_sr_resources {
@@ -1005,7 +948,6 @@ typedef struct sec_sr_resources {
 	size_t          secure_crc_sizes;
 } sec_sr_resources;
 #endif
-
 #ifdef CONFIG_MALI_SEC_HWCNT
 typedef struct hwc_resources {
 	u64 arith_words;
@@ -1027,6 +969,8 @@ typedef struct hwc_resources {
  * @cur_size:  Number of free pages currently in the pool (may exceed @max_size
  *             in some corner cases)
  * @max_size:  Maximum number of free pages in the pool
+ * @order:     order = 0 refers to a pool of 4 KB pages
+ *             order = 9 refers to a pool of 2 MB pages (2^9 * 4KB = 2 MB)
  * @pool_lock: Lock protecting the pool - must be held when modifying @cur_size
  *             and @page_list
  * @page_list: List of free pages in the pool
@@ -1039,12 +983,43 @@ struct kbase_mem_pool {
 	struct kbase_device *kbdev;
 	size_t              cur_size;
 	size_t              max_size;
+	size_t		    order;
 	spinlock_t          pool_lock;
 	struct list_head    page_list;
 	struct shrinker     reclaim;
 
 	struct kbase_mem_pool *next_pool;
 };
+
+/**
+ * struct kbase_devfreq_opp - Lookup table for converting between nominal OPP
+ *                            frequency, and real frequency and core mask
+ * @opp_freq:  Nominal OPP frequency
+ * @real_freq: Real GPU frequency
+ * @core_mask: Shader core mask
+ */
+struct kbase_devfreq_opp {
+	u64 opp_freq;
+	u64 real_freq;
+	u64 core_mask;
+};
+
+struct kbase_mmu_mode {
+	void (*update)(struct kbase_context *kctx);
+	void (*get_as_setup)(struct kbase_context *kctx,
+			struct kbase_mmu_setup * const setup);
+	void (*disable_as)(struct kbase_device *kbdev, int as_nr);
+	phys_addr_t (*pte_to_phy_addr)(u64 entry);
+	int (*ate_is_valid)(u64 ate, unsigned int level);
+	int (*pte_is_valid)(u64 pte, unsigned int level);
+	void (*entry_set_ate)(u64 *entry, struct tagged_addr phy,
+			unsigned long flags, unsigned int level);
+	void (*entry_set_pte)(u64 *entry, phys_addr_t phy);
+	void (*entry_invalidate)(u64 *entry);
+};
+
+struct kbase_mmu_mode const *kbase_mmu_mode_get_lpae(void);
+struct kbase_mmu_mode const *kbase_mmu_mode_get_aarch64(void);
 
 
 #define DEVNAME_SIZE	16
@@ -1088,10 +1063,19 @@ struct kbase_device {
 	struct kbase_pm_device_data pm;
 	struct kbasep_js_device_data js_data;
 	struct kbase_mem_pool mem_pool;
+	struct kbase_mem_pool lp_mem_pool;
 	struct kbasep_mem_device memdev;
 	struct kbase_mmu_mode const *mmu_mode;
 
 	struct kbase_as as[BASE_MAX_NR_AS];
+	/* The below variables (as_free and as_to_kctx) are managed by the
+	 * Context Scheduler. The kbasep_js_device_data::runpool_irq::lock must
+	 * be held whilst accessing these.
+	 */
+	u16 as_free; /* Bitpattern of free Address Spaces */
+	/* Mapping from active Address Spaces to kbase_context */
+	struct kbase_context *as_to_kctx[BASE_MAX_NR_AS];
+
 
 	spinlock_t mmu_mask_change;
 
@@ -1183,9 +1167,6 @@ struct kbase_device {
 
 	struct kbase_vinstr_context *vinstr_ctx;
 
-	/*value to be written to the irq_throttle register each time an irq is served */
-	atomic_t irq_throttle_cycles;
-
 #if KBASE_TRACE_ENABLE
 	spinlock_t              trace_lock;
 	u16                     trace_first_out;
@@ -1204,21 +1185,32 @@ struct kbase_device {
 	struct list_head        kctx_list;
 	struct mutex            kctx_list_lock;
 
-#ifdef CONFIG_PM_DEVFREQ_ARM
+#ifdef CONFIG_MALI_DEVFREQ
 	struct devfreq_dev_profile devfreq_profile;
 	struct devfreq *devfreq;
 	unsigned long current_freq;
+	unsigned long current_nominal_freq;
 	unsigned long current_voltage;
+	u64 current_core_mask;
+	struct kbase_devfreq_opp *opp_table;
+	int num_opps;
 #ifdef CONFIG_DEVFREQ_THERMAL
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 4, 0)
 	struct devfreq_cooling_device *devfreq_cooling;
 #else
 	struct thermal_cooling_device *devfreq_cooling;
 #endif
-#endif
-#endif
+	/* Current IPA model - true for configured model, false for fallback */
+	atomic_t ipa_use_configured_model;
+	struct {
+		/* Access to this struct must be with ipa.lock held */
+		struct mutex lock;
+		struct kbase_ipa_model *configured_model;
+		struct kbase_ipa_model *fallback_model;
+	} ipa;
+#endif /* CONFIG_DEVFREQ_THERMAL */
+#endif /* CONFIG_MALI_DEVFREQ */
 
-	struct kbase_ipa_context *ipa_ctx;
 
 #ifdef CONFIG_MALI_TRACE_TIMELINE
 	struct kbase_trace_kbdev_timeline timeline;
@@ -1241,10 +1233,9 @@ struct kbase_device {
 	u64 debugfs_as_read_bitmap;
 #endif /* CONFIG_MALI_DEBUG */
 
-#ifndef MALI_SEC_INTEGRATION
+	/* MALI_SEC_INTEGRATION */
 	/* debugfs entry for trace */
 	struct dentry *trace_dentry;
-#endif /* MALI_SEC_INTEGRATION */
 
 	/* failed job dump, used for separate debug process */
 	wait_queue_head_t job_fault_wq;
@@ -1322,8 +1313,11 @@ struct kbase_device {
 	u32 snoop_enable_smc;
 	u32 snoop_disable_smc;
 
-	/* Protected operations */
-	struct kbase_protected_ops *protected_ops;
+	/* Protected mode operations */
+	struct protected_mode_ops *protected_ops;
+
+	/* Protected device attached to this kbase device */
+	struct protected_mode_device *protected_dev;
 
 	/*
 	 * true when GPU is put into protected mode
@@ -1375,7 +1369,15 @@ struct kbase_device {
 	/* Current serialization mode. See KBASE_SERIALIZE_* for details */
 	u8 serialize_jobs;
 
-        /* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_JOB_DUMP
+	/* Used to backup status of job serialization mode
+	 * when we use GWT and restore when GWT is disabled.
+	 * GWT uses full serialization mode.
+	 */
+	u8 backup_serialize_jobs;
+#endif
+
+	/* MALI_SEC_INTEGRATION */
 	struct kbase_vendor_callbacks *vendor_callbacks;
 };
 
@@ -1433,6 +1435,14 @@ struct jsctx_queue {
  * context, to disable use of implicit dma-buf fences. This is used to avoid
  * potential synchronization deadlocks.
  *
+ * @KCTX_FORCE_SAME_VA: Set when BASE_MEM_SAME_VA should be forced on memory
+ * allocations. For 64-bit clients it is enabled by default, and disabled by
+ * default on 32-bit clients. Being able to clear this flag is only used for
+ * testing purposes of the custom zone allocation on 64-bit user-space builds,
+ * where we also require more control than is available through e.g. the JIT
+ * allocation mechanism. However, the 64-bit user-space client must still
+ * reserve a JIT region using KBASE_IOCTL_MEM_JIT_INIT
+ *
  * All members need to be separate bits. This enum is intended for use in a
  * bitmask where multiple values get OR-ed together.
  */
@@ -1448,12 +1458,19 @@ enum kbase_context_flags {
 	KCTX_SCHEDULED = 1U << 8,
 	KCTX_DYING = 1U << 9,
 	KCTX_NO_IMPLICIT_SYNC = 1U << 10,
+	KCTX_FORCE_SAME_VA = 1U << 11,
+};
+
+struct kbase_sub_alloc {
+	struct list_head link;
+	struct page *page;
+	DECLARE_BITMAP(sub_pages, SZ_2M / SZ_4K);
 };
 
 struct kbase_context {
 	struct file *filp;
 	struct kbase_device *kbdev;
-	int id; /* System wide unique id */
+	u32 id; /* System wide unique id */
 	unsigned long api_version;
 	phys_addr_t pgd;
 	struct list_head event_list;
@@ -1471,11 +1488,19 @@ struct kbase_context {
 
 	u64 *mmu_teardown_pages;
 
-	struct page *aliasing_sink_page;
+	struct tagged_addr aliasing_sink_page;
+
+	struct mutex            mem_partials_lock;
+	struct list_head        mem_partials;
 
 	struct mutex            mmu_lock;
 	struct mutex            reg_lock; /* To be converted to a rwlock? */
-	struct rb_root          reg_rbtree; /* Red-Black tree of GPU regions (live regions) */
+	struct rb_root reg_rbtree_same; /* RB tree of GPU (live) regions,
+					 * SAME_VA zone */
+	struct rb_root reg_rbtree_exec; /* RB tree of GPU (live) regions,
+					 * EXEC zone */
+	struct rb_root reg_rbtree_custom; /* RB tree of GPU (live) regions,
+					 * CUSTOM_VA zone */
 
 	unsigned long    cookies;
 	struct kbase_va_region *pending_regions[BITS_PER_LONG];
@@ -1489,15 +1514,13 @@ struct kbase_context {
 	atomic_t         nonmapped_pages;
 
 	struct kbase_mem_pool mem_pool;
+	struct kbase_mem_pool lp_mem_pool;
 
 	struct shrinker         reclaim;
 	struct list_head        evict_list;
 
 	struct list_head waiting_soft_jobs;
 	spinlock_t waiting_soft_jobs_lock;
-#ifdef CONFIG_KDS
-	struct list_head waiting_kds_resource;
-#endif
 #ifdef CONFIG_MALI_DMA_FENCE
 	struct {
 		struct list_head waiting_resource;
@@ -1515,6 +1538,14 @@ struct kbase_context {
 	 * to ensure the context doesn't disappear (but this has restrictions on what other locks
 	 * you can take whilst doing this) */
 	int as_nr;
+
+	/* Keeps track of the number of users of this context. A user can be a
+	 * job that is available for execution, instrumentation needing to 'pin'
+	 * a context for counter collection, etc. If the refcount reaches 0 then
+	 * this context is considered inactive and the previously programmed
+	 * AS might be cleared at any point.
+	 */
+	atomic_t refcount;
 
 	/* NOTE:
 	 *
@@ -1589,11 +1620,31 @@ struct kbase_context {
 
 	/* JIT allocation management */
 	struct kbase_va_region *jit_alloc[256];
+	/* Maximum number of JIT allocations allowed at once */
+	u8 jit_max_allocations;
+	/* Current number of in-flight JIT allocations */
+	u8 jit_current_allocations;
+	/* Current number of in-flight JIT allocations per bin */
+	u8 jit_current_allocations_per_bin[256];
+	/* JIT version number:
+	 * 1: client used KBASE_IOCTL_MEM_JIT_INIT_OLD
+	 * 2: client used KBASE_IOCTL_MEM_JIT_INIT
+	 */
+	u8 jit_version;
 	struct list_head jit_active_head;
 	struct list_head jit_pool_head;
 	struct list_head jit_destroy_head;
 	struct mutex jit_evict_lock;
 	struct work_struct jit_work;
+
+	/* A list of the JIT soft-jobs in submission order
+	 * (protected by kbase_jd_context.lock)
+	 */
+	struct list_head jit_atoms_head;
+	/* A list of pending JIT alloc soft-jobs (using the 'queue' list_head)
+	 * (protected by kbase_jd_context.lock)
+	 */
+	struct list_head jit_pending_alloc;
 
 	/* External sticky resource management */
 	struct list_head ext_res_meta_head;
@@ -1603,6 +1654,30 @@ struct kbase_context {
 
 	/* Current age count, used to determine age for newly submitted atoms */
 	u32 age_count;
+
+	/* Level of JIT allocation trimming to perform on free (0 - 100%) */
+	u8 trim_level;
+
+#ifdef CONFIG_MALI_JOB_DUMP
+	/* Used for tracking GPU writes.
+	 * (protected by kbase_context.reg_lock)
+	 */
+	bool gwt_enabled;
+
+	/* Simple sticky bit flag to know if GWT was ever enabled
+	 * (protected by kbase_context.reg_lock)
+	 */
+	bool gwt_was_enabled;
+
+	/* Current list of GPU writes.
+	 * (protected by kbase_context.reg_lock)
+	 */
+	struct list_head gwt_current_list;
+
+	 /* Snapshot of list of GPU writes for sending to user space. */
+	struct list_head gwt_snapshot_list;
+
+#endif
 
 	/* MALI_SEC_INTEGRATION */
 	int ctx_status;
@@ -1619,6 +1694,27 @@ struct kbase_context {
 	atomic_t mem_profile_showing_state;
 	wait_queue_head_t mem_profile_wait;
 };
+
+#ifdef CONFIG_MALI_JOB_DUMP
+/**
+ * struct kbasep_gwt_list_element - Structure used to collect GPU
+ *                                  write faults.
+ * @link:                           List head for adding write faults.
+ * @handle:                         The handle for the modified region.
+ * @offset:                         The offset in pages of the modified
+ *                                  part of the region.
+ * @num_pages:                      The number of pages modified.
+ *
+ * Using this structure all GPU write faults are stored in a list.
+ */
+struct kbasep_gwt_list_element {
+	struct list_head link;
+	u64 handle;
+	u64 offset;
+	u64 num_pages;
+};
+
+#endif
 
 /**
  * struct kbase_ctx_ext_res_meta - Structure which binds an external resource
